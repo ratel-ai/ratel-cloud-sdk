@@ -2,8 +2,9 @@
   "name": "@ratel-ai/cloud-sdk",
   "version": "0.1.0",
   "description": "Management & supervised self-improvement client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API. Pure HTTP, no native addon.",
-  "private": true,
   "type": "module",
+  "sideEffects": false,
+  "packageManager": "pnpm@10.28.2",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -37,6 +38,9 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "LICENSE.md",
@@ -44,7 +48,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
     "test": "vitest run"

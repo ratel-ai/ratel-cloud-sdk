@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the engines floor; 24 matches the sister ratel repo's CI.
+        node: ['20', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm run build
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Lint
+        run: pnpm run lint
+      - name: Test
+        run: pnpm run test
+      # Exercise the REAL tarball a consumer would install: pack, install into a
+      # clean project, and drive every subpath export — catching exports-map /
+      # files-array / ESM-resolution breakage that in-repo tests can't see.
+      - name: Pack + install + import smoke
+        run: |
+          set -e
+          pkg="$PWD"
+          work="$(mktemp -d)"
+          cd "$work"
+          npm pack "$pkg" --silent
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund ./ratel-ai-cloud-sdk-*.tgz
+          node --input-type=module -e "
+            import { RatelCloudSdk, canonicalSkill } from '@ratel-ai/cloud-sdk';
+            import { MockCloud } from '@ratel-ai/cloud-sdk/testing';
+            const mock = new MockCloud();
+            const cloud = new RatelCloudSdk({ apiKey: mock.apiKey, fetch: mock.fetch });
+            const skill = await cloud.skills.create({ name: 'smoke', description: 'd', body: 'b' });
+            if (!skill.id) throw new Error('create round-trip failed');
+            console.log('tarball smoke OK:', skill.id);
+          "
