@@ -1,0 +1,62 @@
+{
+  "name": "@ratel-ai/cloud-sdk",
+  "version": "0.1.0",
+  "description": "Management & intelligence client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API. Pure HTTP, no native addon.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "default": "./dist/node/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "license": "MIT",
+  "author": "Agentified",
+  "homepage": "https://github.com/ratel-ai/ratel-cloud-sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ratel-ai/ratel-cloud-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ratel-ai/ratel-cloud-sdk/issues"
+  },
+  "keywords": [
+    "skills",
+    "skill-catalog",
+    "ai-agents",
+    "llm",
+    "context-engineering",
+    "ratel"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "LICENSE.md",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.5"
+  }
+}
