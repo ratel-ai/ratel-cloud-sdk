@@ -121,8 +121,8 @@ use `publish`/`archive`. A rename that collides with a non-archived skill is
 #### `skills.publish(id, opts?)` / `skills.archive(id, opts?)`
 
 Lifecycle transitions; `{ expectedVersion }` optionally guards them like an edit (they also bump
-`version`). Publishing stamps `publishedAt` and makes the skill visible to `catalog.pull` and
-the loader. Archiving removes it from the published set and frees its name. An unguarded
+`version`). Publishing stamps `publishedAt` and makes the skill visible to the loader.
+Archiving removes it from the published set and frees its name. An unguarded
 `archive(id)` is the "just remove it" form for cleanup scripts; guard a `publish` when you want
 to be sure nobody edited the body between your review and the call.
 
@@ -146,37 +146,9 @@ const report = await cloud.skills.import(
 - Imported updates bump versions like any other edit; concurrent editors will see
   `version_conflict` on their next stale write, as expected.
 
-### `cloud.catalog` — read-only published pull
-
-```ts
-const pulled = await cloud.catalog.pull({ scope: "user-123" });
-if (!pulled.notModified) {
-  console.log(pulled.catalogVersion, pulled.skills.length);
-}
-```
-
-`pull` returns the **published** set for a scope as the frozen `protocol/v1` wire shape. It is
-meant for tooling and CI diffing — agents should sync through the `@ratel-ai/cloud` loader
-instead, which owns refresh and staleness.
-
-- `scope` absent ⇒ the global layer. A named scope ⇒ that subject's layer **overlaid** on the
-  global layer, the subject winning on `name` collisions. An unknown scope is not an error — it
-  resolves to the global layer.
-- `etag` enables cheap revalidation. The result is a discriminated union — check `notModified`:
-
-```ts
-let etag: string | undefined;
-const res = await cloud.catalog.pull({ etag });
-if (res.notModified) {
-  // 304 — nothing changed since `etag`; res.etag echoes the current tag
-} else {
-  etag = res.etag ?? undefined;       // store for the next pull
-  use(res.skills, res.catalogVersion);
-}
-```
-
-`catalogVersion` is the SHA-256 hex of the canonical set bytes — the same value `analyze` reports
-as the snapshot its coverage verdicts were computed against, so you can correlate the two.
+Reading the *resolved published* catalog — the overlaid, published-only view an agent receives —
+is deliberately not part of this client: that's the ratel SDK cloud loader's job. `list` gives
+you the management rows; the loader serves the consumer view.
 
 ### `cloud.intents` — conversation analysis
 
@@ -345,16 +317,6 @@ for (const s of pending.suggestions) {
 }
 ```
 
-### Detecting catalog drift in CI
-
-`catalog.pull` + the ETag makes "did the published catalog change?" a one-request check:
-
-```ts
-const res = await cloud.catalog.pull({ etag: previouslyStoredEtag });
-if (res.notModified) process.exit(0);            // nothing changed
-diffAgainstRepo(res.skills);                     // …otherwise inspect res.catalogVersion / skills
-```
-
 ### Per-end-user personalization, end to end
 
 `endUserId` is an opaque id (same id space as telemetry). Skills scoped to it overlay the global
@@ -370,10 +332,8 @@ await cloud.skills.create({
   status: "published",
 });
 
-const theirs = await cloud.catalog.pull({ scope: "user-123" }); // overlaid view
-const global = await cloud.catalog.pull({});                    // untouched
-
-// Analysis with the same id sees the overlaid catalog, and gap drafts inherit the scope:
+// Agents synced with scope "user-123" get the overlaid view; everyone else is untouched.
+// Analysis with the same id sees the overlaid catalog too, and gap drafts inherit the scope:
 await cloud.intents.analyze({ messages, endUserId: "user-123" });
 ```
 
@@ -381,7 +341,7 @@ await cloud.intents.analyze({ messages, endUserId: "user-123" });
 
 - Uniqueness is enforced only among **non-archived** skills: archive `foo`, and a new `foo` can
   be created. The archived row keeps its id and history.
-- `skills.import` never deletes: removing a skill from your source folder does *not* archive it
+- `skills.import` never deletes: removing a skill from your source data does *not* archive it
   in cloud on the next import. Archive explicitly.
 - `edit_skill` suggestions never propose renames; renames are always a deliberate
   `skills.update`.
@@ -389,8 +349,8 @@ await cloud.intents.analyze({ messages, endUserId: "user-123" });
 ### Timeouts, aborts, and re-issue policy
 
 All failures-to-respond surface as `code: "network_error"` with `status: null` — including the
-client-side timeout. There is **no built-in retry**. Reads (`list`, `get`, `pull`, `list`
-suggestions) are always safe to re-issue. For mutations, prefer re-reading state over blind
+client-side timeout. There is **no built-in retry**. Reads (`list`, `get`, and suggestion
+lists) are always safe to re-issue. For mutations, prefer re-reading state over blind
 retries: a timed-out `create` may still have committed server-side, and re-issuing it will
 surface as `name_conflict` — which is your signal to `list` and reconcile rather than a bug.
 
@@ -429,8 +389,8 @@ What to know when asserting against it:
 
 - Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
   real API.
-- ETags are computed with the real `protocol/v1` canonicalization, so conditional `pull`
-  behaves faithfully.
+- The mock's `GET /catalog` route (the loader's read path) computes ETags with the real
+  `protocol/v1` canonicalization, so loader-side integration tests behave faithfully too.
 - The intent **extraction** is a deterministic fixture, not the server pipeline: one intent per
   unique `user` message, covered iff some published skill's name tokens all appear in the
   message text; uncovered intents draft `new_skill` suggestions. Don't assert on extraction

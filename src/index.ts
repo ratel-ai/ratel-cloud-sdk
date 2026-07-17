@@ -1,4 +1,3 @@
-import { CatalogClient } from "./catalog.js";
 import { IntentsClient } from "./intents.js";
 import { SkillsClient } from "./skills.js";
 import { SuggestionsClient } from "./suggestions.js";
@@ -14,21 +13,18 @@ import { type CloudSdkOptions, Transport } from "./transport.js";
  * The two share only the API key.
  */
 export class RatelCloudSdk {
-  readonly catalog: CatalogClient;
   readonly skills: SkillsClient;
   readonly suggestions: SuggestionsClient;
   readonly intents: IntentsClient;
 
   constructor(options: CloudSdkOptions) {
     const transport = new Transport(options);
-    this.catalog = new CatalogClient(transport);
     this.skills = new SkillsClient(transport);
     this.suggestions = new SuggestionsClient(transport);
     this.intents = new IntentsClient(transport);
   }
 }
 
-export { CatalogClient, type PullOptions, type PullResult } from "./catalog.js";
 export { CloudSdkError, type CloudSdkErrorCode } from "./errors.js";
 export { IntentsClient } from "./intents.js";
 export { type ListSkillsOptions, type ListSkillsResult, SkillsClient } from "./skills.js";

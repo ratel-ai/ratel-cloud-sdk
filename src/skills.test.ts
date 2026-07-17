@@ -93,7 +93,7 @@ describe("SkillsClient", () => {
     });
   });
 
-  it("publish makes a skill pullable; archive removes it", async () => {
+  it("publish moves a skill into the published set; archive removes it", async () => {
     const { sdk } = makeSdk();
     const skill = await sdk.skills.create({ name: "pub-me", description: "d", body: "b" });
 
@@ -101,14 +101,12 @@ describe("SkillsClient", () => {
     expect(published.status).toBe("published");
     expect(published.publishedAt).not.toBeNull();
 
-    let pulled = await sdk.catalog.pull();
-    if (pulled.notModified) throw new Error("unreachable");
-    expect(pulled.skills.map((s) => s.name)).toContain("pub-me");
+    let listed = await sdk.skills.list({ status: "published" });
+    expect(listed.skills.map((s) => s.name)).toContain("pub-me");
 
     await sdk.skills.archive(skill.id, { expectedVersion: published.version });
-    pulled = await sdk.catalog.pull();
-    if (pulled.notModified) throw new Error("unreachable");
-    expect(pulled.skills.map((s) => s.name)).not.toContain("pub-me");
+    listed = await sdk.skills.list({ status: "published" });
+    expect(listed.skills.map((s) => s.name)).not.toContain("pub-me");
   });
 
   it("scopes a skill to an end user and filters list by it", async () => {
