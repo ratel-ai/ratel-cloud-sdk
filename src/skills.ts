@@ -20,10 +20,7 @@ export interface ListSkillsResult {
 
 /**
  * The managed-catalog write surface (`/skills`, Bearer project key).
- *
- * NOTE: these routes are the ratel-cloud "S2" milestone; until it ships, the
- * production API serves only the read-side `GET /catalog`. The wire contract
- * here is what the S2 routes implement (and what `MockCloud` serves for tests).
+ * `MockCloud` serves the same wire contract for tests.
  */
 export class SkillsClient {
   constructor(private readonly transport: Transport) {}
@@ -46,7 +43,12 @@ export class SkillsClient {
     return body.skill;
   }
 
-  /** Edit fields; throws `conflict (version_conflict)` when `expectedVersion` is stale. */
+  /**
+   * Edit fields. Pass `expectedVersion` (the version you last read) to guard
+   * the edit against concurrent writes — a stale value throws
+   * `conflict (version_conflict)`. Omitted, the edit applies unconditionally
+   * (last write wins).
+   */
   async update(id: string, input: UpdateSkillInput): Promise<CloudSkill> {
     const body = await this.transport.json<{ skill: CloudSkill }>("PATCH", `/skills/${id}`, {
       body: input,
@@ -54,14 +56,16 @@ export class SkillsClient {
     return body.skill;
   }
 
-  async publish(id: string, opts: { expectedVersion: number }): Promise<CloudSkill> {
+  /** Publish; `expectedVersion` optionally guards the transition like an edit. */
+  async publish(id: string, opts: { expectedVersion?: number } = {}): Promise<CloudSkill> {
     const body = await this.transport.json<{ skill: CloudSkill }>("POST", `/skills/${id}/publish`, {
       body: opts,
     });
     return body.skill;
   }
 
-  async archive(id: string, opts: { expectedVersion: number }): Promise<CloudSkill> {
+  /** Archive; `expectedVersion` optionally guards the transition like an edit. */
+  async archive(id: string, opts: { expectedVersion?: number } = {}): Promise<CloudSkill> {
     const body = await this.transport.json<{ skill: CloudSkill }>("POST", `/skills/${id}/archive`, {
       body: opts,
     });
@@ -71,8 +75,7 @@ export class SkillsClient {
   /**
    * Bulk upsert-by-name for onboarding an existing skill set. The server
    * reports what changed; nothing is archived (cloud stays source of truth —
-   * removal is an explicit `archive`). Pair with `readSkillsFromDir` from
-   * `@ratel-ai/cloud-sdk/node` to import a SKILL.md folder.
+   * removal is an explicit `archive`).
    */
   async import(skills: NewSkillInput[]): Promise<ImportReport> {
     return this.transport.json<ImportReport>("POST", "/skills/import", {

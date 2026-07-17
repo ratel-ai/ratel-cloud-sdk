@@ -6,12 +6,10 @@ const ANALYZE_TIMEOUT_MS = 300_000;
 
 /**
  * Conversation → intents → coverage → suggestions (`POST /intents/analyze`,
- * Bearer project key).
+ * Bearer project key). `MockCloud` serves the same wire contract for tests.
  *
- * NOTE: this route is the ratel-cloud "S3" milestone; the wire contract here is
- * what it implements (and what `MockCloud` serves for tests). Re-analyzing an
- * unchanged conversation is a server-side cache hit (`cached: true`), so
- * calling after every turn is cheap.
+ * Re-analyzing an unchanged conversation is a server-side cache hit
+ * (`cached: true`), so calling after every turn is cheap.
  */
 export class IntentsClient {
   constructor(private readonly transport: Transport) {}

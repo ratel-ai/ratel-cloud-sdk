@@ -83,9 +83,10 @@ export interface NewSkillInput {
   endUserId?: string | null;
 }
 
-/** Input for editing a skill; `expectedVersion` drives the version CAS. */
+/** Input for editing a skill; `expectedVersion` opts into the version CAS —
+ * omitted, the edit applies unconditionally. */
 export interface UpdateSkillInput {
-  expectedVersion: number;
+  expectedVersion?: number;
   name?: string;
   description?: string;
   body?: string;

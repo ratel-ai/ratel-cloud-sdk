@@ -1,23 +1,14 @@
 # @ratel-ai/cloud-sdk
 
-Management & intelligence client for [Ratel Cloud](https://cloud.ratel.sh): manage a project's
+Management & supervised self-improvement client for [Ratel Cloud](https://cloud.ratel.sh): manage a project's
 **cloud skills catalog**, run **intent analysis** on conversations, and review the resulting
 **skill suggestions** — over the v1 HTTP API, authenticated by a project API key.
 
-Pure `fetch`, zero runtime dependencies, no native addon. Runs in Node ≥ 20, edge runtimes, CI.
+```sh
+npm install @ratel-ai/cloud-sdk
+```
 
-## Scope — and what this package is *not*
-
-| Concern | Package |
-|---|---|
-| Manage the catalog, analyze conversations, review suggestions | **this package** |
-| Sync published skills into a running agent (replica, refresh, ownership) | `@ratel-ai/cloud` loader (ratel repo) |
-| Send LLM-call telemetry | telemetry client (ratel repo) |
-
-This package deliberately does **not** keep a runtime replica of the catalog — agents should use
-the loader for that. The two share only the API key.
-
-## Usage
+## Quickstart
 
 ```ts
 import { RatelCloudSdk } from "@ratel-ai/cloud-sdk";
@@ -32,57 +23,450 @@ const skill = await cloud.skills.create({
 });
 await cloud.skills.publish(skill.id, { expectedVersion: skill.version });
 
-// Onboard an existing SKILL.md folder (Node only):
-import { readSkillsFromDir } from "@ratel-ai/cloud-sdk/node";
-const report = await cloud.skills.import(await readSkillsFromDir("./skills"));
-
-// Read-only pull (tooling/CI diffing; agents use the loader instead):
-const pulled = await cloud.catalog.pull({ scope: "user-123" });
-
-// — Intelligence loop —
+// — Supervised self-improvement —
 const run = await cloud.intents.analyze({
   messages: [{ role: "user", content: "how do I rotate the database credentials?" }],
-  endUserId: "user-123", // scopes coverage + drafted skills to this user
+  endUserId: "user-123",
 });
-
 for (const id of run.suggestionIds) {
   await cloud.suggestions.approve(id); // gap drafts land as draft skills
 }
 ```
 
-Re-analyzing an unchanged conversation is a server-side cache hit (`cached: true`), so calling
-`analyze` after every turn is cheap.
+## Client setup
+
+```ts
+const cloud = new RatelCloudSdk({
+  apiKey: "rtl_…",                              // required — sent as `Authorization: Bearer`
+  baseUrl: "https://cloud.ratel.sh/api/v1",     // default; include the /api/v1 prefix
+  timeoutMs: 30_000,                            // default per-request timeout
+  fetch: customFetch,                           // injectable (testing, proxies, instrumentation)
+});
+```
+
+Long-running calls — `intents.analyze` and `suggestions.generate` — override `timeoutMs` with a
+5-minute budget of their own; everything else uses yours.
+
+The transport does **no retries**: mutations are not idempotent, and reads are cheap to re-issue
+at your discretion. A request that never gets a response (DNS failure, abort, timeout) throws a
+`CloudSdkError` with `code: "network_error"` and `status: null` — see [Errors](#errors).
+
+---
+
+## API reference
+
+### `cloud.skills` — managed-catalog write surface
+
+Skills live in one project and move through `draft → published → archived`. Every mutation
+supports **opt-in optimistic concurrency**: pass the `version` you last read as
+`expectedVersion` and a stale value throws `conflict (version_conflict)` with nothing written;
+omit it and the write applies unconditionally (last write wins). Pass it whenever your edit was
+derived from a read — skip it only for writes that don't depend on current content (cleanup
+scripts, forced overwrites).
+
+#### `skills.list(options?) → { count, skills }`
+
+```ts
+const { skills } = await cloud.skills.list({ status: "draft" });
+const theirs = await cloud.skills.list({ endUserId: "user-123" }); // one user's scoped skills
+```
+
+Filters: `status` (`"draft" | "published" | "archived"`), `endUserId`. No filter returns every
+skill in the project, archived included.
+
+#### `skills.get(id) → CloudSkill`
+
+Throws `not_found` for unknown ids — including skills that never existed *and* ids from another
+project (the server does not distinguish).
+
+#### `skills.create(input) → CloudSkill`
+
+```ts
+const skill = await cloud.skills.create({
+  name: "rotate-db-credentials",       // kebab-case, unique among non-archived skills
+  description: "Rotate database credentials without downtime.",
+  body: "# Rotation\n…",
+  tags: ["ops"],                       // optional, default []
+  tools: ["psql"],                     // optional, default []
+  metadata: { runbook: ["db"] },       // optional, Record<string, string[]>
+  status: "published",                 // optional — skip the draft stage entirely
+  endUserId: "user-123",               // optional — scope to one end-user (see Scoping)
+});
+```
+
+- `name` must be kebab-case (`^[a-z0-9]+(?:-[a-z0-9]+)*$`) — anything else is
+  `invalid (invalid_name)`.
+- A name collision with any **non-archived** skill is `conflict (name_conflict)`. Archiving a
+  skill frees its name for reuse.
+- Default `status` is `"draft"`; `"archived"` is not a valid creation status (archive is a
+  lifecycle transition, not a starting state).
+- The returned skill carries `version: 1` — keep it for the next mutation.
+
+#### `skills.update(id, { expectedVersion?, …fields }) → CloudSkill`
+
+```ts
+const next = await cloud.skills.update(skill.id, {
+  expectedVersion: skill.version,      // guard the edit against concurrent writes
+  body: "# Rotation (v2)\n…",
+  name: "rotate-credentials",          // renames are allowed
+});
+
+await cloud.skills.update(skill.id, { tags: ["ops"] }); // unguarded: applies unconditionally
+```
+
+Partial edit: only the fields you pass change. `status` is deliberately **not** editable here —
+use `publish`/`archive`. A rename that collides with a non-archived skill is
+`conflict (name_conflict)`. Every successful update bumps `version` by 1, guarded or not.
+
+#### `skills.publish(id, opts?)` / `skills.archive(id, opts?)`
+
+Lifecycle transitions; `{ expectedVersion }` optionally guards them like an edit (they also bump
+`version`). Publishing stamps `publishedAt` and makes the skill visible to `catalog.pull` and
+the loader. Archiving removes it from the published set and frees its name. An unguarded
+`archive(id)` is the "just remove it" form for cleanup scripts; guard a `publish` when you want
+to be sure nobody edited the body between your review and the call.
+
+#### `skills.import(skills) → { created, updated, unchanged }`
+
+Bulk **upsert-by-name** for onboarding an existing skill set — e.g. syncing from the store your
+application already manages:
+
+```ts
+const rows = await db.query("SELECT name, description, body, tags FROM playbooks");
+const report = await cloud.skills.import(
+  rows.map((r) => ({ name: r.name, description: r.description, body: r.body, tags: r.tags })),
+);
+// → { created: ["deploy-checklist"], updated: ["rotate-db-credentials"], unchanged: [] }
+```
+
+- Matching is by `name` against non-archived skills; content comparison decides
+  `updated` vs `unchanged`, so re-running an import is idempotent.
+- Import **never archives**: a skill that exists in cloud but not in your input is left alone.
+  Cloud is the source of truth — removal is an explicit `archive` call.
+- Imported updates bump versions like any other edit; concurrent editors will see
+  `version_conflict` on their next stale write, as expected.
+
+### `cloud.catalog` — read-only published pull
+
+```ts
+const pulled = await cloud.catalog.pull({ scope: "user-123" });
+if (!pulled.notModified) {
+  console.log(pulled.catalogVersion, pulled.skills.length);
+}
+```
+
+`pull` returns the **published** set for a scope as the frozen `protocol/v1` wire shape. It is
+meant for tooling and CI diffing — agents should sync through the `@ratel-ai/cloud` loader
+instead, which owns refresh and staleness.
+
+- `scope` absent ⇒ the global layer. A named scope ⇒ that subject's layer **overlaid** on the
+  global layer, the subject winning on `name` collisions. An unknown scope is not an error — it
+  resolves to the global layer.
+- `etag` enables cheap revalidation. The result is a discriminated union — check `notModified`:
+
+```ts
+let etag: string | undefined;
+const res = await cloud.catalog.pull({ etag });
+if (res.notModified) {
+  // 304 — nothing changed since `etag`; res.etag echoes the current tag
+} else {
+  etag = res.etag ?? undefined;       // store for the next pull
+  use(res.skills, res.catalogVersion);
+}
+```
+
+`catalogVersion` is the SHA-256 hex of the canonical set bytes — the same value `analyze` reports
+as the snapshot its coverage verdicts were computed against, so you can correlate the two.
+
+### `cloud.intents` — conversation analysis
+
+#### `intents.analyze(input) → AnalyzeResult`
+
+```ts
+const run = await cloud.intents.analyze({
+  messages: [
+    { role: "user", content: "how do I rotate the database credentials?" },
+    { role: "assistant", content: "You can use the rotation runbook…" },
+  ],
+  endUserId: "user-123",         // optional — scope coverage + drafted skills to this user
+  conversationId: "conv-42",     // optional — reference a conversation Cloud already ingested
+});
+
+run.intents.forEach((i) => {
+  // { id, text, covered, matchedSkillId, score }
+});
+```
+
+Extracts the user's intents, checks each against the published catalog (**coverage**), and
+drafts `new_skill` suggestions for the gaps. The result:
+
+| Field | Meaning |
+|---|---|
+| `runId` | Identifier of this analysis run |
+| `cached` | `true` when the conversation was unchanged since the last run — the previous result is returned |
+| `catalogVersion` | ETag hex of the catalog snapshot the verdicts were computed against |
+| `intents` | Each extracted intent with `covered`, `matchedSkillId`, `score` |
+| `suggestionIds` | Suggestions drafted from this run's coverage gaps — feed them to `suggestions.approve/reject` |
+
+Re-analyzing an unchanged conversation is a server-side cache hit, so **calling `analyze` after
+every turn is cheap** — the intended usage is exactly that, with `endUserId` set so coverage runs
+against that user's overlaid catalog and any drafted skills inherit the scope.
+
+Note the messages are role-tagged (`user | assistant | system | tool`); intent extraction is
+driven by the user turns, with the rest as context.
+
+### `cloud.suggestions` — reviewing machine-drafted proposals
+
+Suggestions are proposals the self-improvement pipeline drafts from usage signals
+(`coverage_gap`, `surfaced_not_invoked`, `tool_error`). Two types:
+
+- **`new_skill`** — a full drafted skill for an uncovered intent; `patch` carries
+  `{ name, description, tags, body, model }`.
+- **`edit_skill`** — a partial patch (`description` / `tags` / `body`, never `name`) against
+  `targetSkillId`, pinned to `targetSkillExpectedVersion`.
+
+Each suggestion carries `rationale`, `evidence`, and a `retrievabilityPreview` (how
+representative queries would rank before vs after applying), so a human can review without
+reconstructing context.
+
+#### `suggestions.list(options?) → { count, suggestions }`
+
+```ts
+const pending = await cloud.suggestions.list({ status: "pending", limit: 100 });
+```
+
+Filters: `status` (`pending | approved | rejected | auto_applied | superseded`), `type`,
+`endUserId`. `limit` is clamped to 1–100, default 50.
+
+#### `suggestions.generate() → { jobId, coalesced }`
+
+Triggers a generation run over accumulated signals. It **drains synchronously server-side** — a
+resolved promise means `list()` already sees the results (hence the 5-minute timeout budget).
+`coalesced: true` means an in-flight run absorbed this request; the results are still there when
+it resolves. Analysis runs draft gap suggestions on their own — `generate` is for sweeping the
+other signal kinds on your schedule.
+
+#### `suggestions.approve(id)` / `suggestions.reject(id)`
+
+Approving applies the proposal:
+
+- a `new_skill` lands as a **draft** skill (inheriting the suggestion's `endUserId` scope) and
+  the suggestion records it in `createdSkillId` — publish it like any other draft;
+- an `edit_skill` applies to the target through the version CAS.
+
+Both transitions require the suggestion to still be `pending`. State races throw `conflict` with
+a `reason` telling you which one you lost — see the next section.
+
+---
 
 ## Errors
 
-Every non-2xx response throws a `CloudSdkError` with a stable `code`
-(`unauthorized` | `not_found` | `conflict` | `invalid` | …) and, for state races, a finer
-`reason` (`version_conflict` | `not_pending` | `name_conflict`). Skill mutations are
-optimistic-concurrency guarded: pass the `version` you read as `expectedVersion`.
-
-## Server availability
-
-`catalog.pull` and `suggestions.*` are live on ratel-cloud today. The `skills.*` write surface
-and `intents.analyze` are the ratel-cloud **S2/S3** milestones — this client implements their
-frozen contracts, which `MockCloud` (below) also serves, so integration code can be built and
-tested ahead of the server rollout.
-
-## Testing your integration
+Every non-2xx response throws a `CloudSdkError`:
 
 ```ts
-import { MockCloud } from "@ratel-ai/cloud-sdk/testing";
-
-const mock = new MockCloud({ catalog: { global: [/* WireSkill[] */] } });
-const cloud = new RatelCloudSdk({ apiKey: mock.apiKey, fetch: mock.fetch });
+try {
+  await cloud.skills.update(id, { expectedVersion, body });
+} catch (err) {
+  if (err instanceof CloudSdkError && err.code === "conflict") {
+    // err.reason === "version_conflict" here
+  } else throw err;
+}
 ```
 
-`MockCloud` is an in-process, fetch-compatible mock of the v1 surface (Node only). Routes and
-error bodies mirror the server; the intent *extraction* is a deterministic fixture, not the
-server pipeline.
+| `code` | Typical status | Meaning |
+|---|---|---|
+| `unauthorized` | 401 | Missing/invalid/revoked API key |
+| `forbidden` | 403 | Key valid, operation not allowed |
+| `not_found` | 404 | Unknown id/route (or another project's resource) |
+| `conflict` | 409 | State race — inspect `reason` |
+| `invalid` | 400 | Malformed input — `reason` may say which rule (e.g. `invalid_name`, `invalid_status`) |
+| `quota_exceeded` | 402 / 429 | Plan quota or rate limit |
+| `unavailable` | 503 | Transient server condition |
+| `server_error` | 5xx | Unexpected server failure |
+| `network_error` | — (`status: null`) | No response: DNS/connection failure, abort, timeout |
+
+The `conflict` reasons on this surface:
+
+| `reason` | Thrown by | Meaning |
+|---|---|---|
+| `version_conflict` | `skills.update/publish/archive` (when guarded), `suggestions.approve` (edit) | `expectedVersion` (or the suggestion's pinned target version) is stale |
+| `name_conflict` | `skills.create/update` | Name already used by a non-archived skill |
+| `not_pending` | `suggestions.approve/reject` | The suggestion was already reviewed (or superseded) |
+
+## Edge cases & recipes
+
+### Retrying a lost version race
+
+`version_conflict` means someone (a teammate, an approved suggestion, an import) wrote the skill
+after you read it. Re-read, re-apply your edit on top, retry:
+
+```ts
+async function updateWithRetry(id: string, edit: { body: string }, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    const current = await cloud.skills.get(id);
+    try {
+      return await cloud.skills.update(id, { expectedVersion: current.version, ...edit });
+    } catch (err) {
+      const lostRace =
+        err instanceof CloudSdkError && err.code === "conflict" && err.reason === "version_conflict";
+      if (!lostRace || i === attempts - 1) throw err;
+    }
+  }
+  throw new Error("unreachable");
+}
+```
+
+Only blind field overwrites are safe to auto-retry like this — if your edit depended on the
+content you read (e.g. appending to the body), recompute it from `current` each iteration.
+
+### Approving suggestions defensively
+
+A review queue processed by two operators — or re-processed after a partial failure — will hit
+state races. Treat them as outcomes, not failures:
+
+```ts
+for (const s of pending.suggestions) {
+  try {
+    await cloud.suggestions.approve(s.id);
+  } catch (err) {
+    if (!(err instanceof CloudSdkError) || err.code !== "conflict") throw err;
+    switch (err.reason) {
+      case "not_pending":
+        break; // someone else already reviewed it — nothing to do
+      case "version_conflict":
+        // the target skill changed since this edit was drafted; the patch may no
+        // longer apply cleanly. Reject and let the next analysis re-draft it.
+        await cloud.suggestions.reject(s.id);
+        break;
+      default:
+        throw err;
+    }
+  }
+}
+```
+
+### Detecting catalog drift in CI
+
+`catalog.pull` + the ETag makes "did the published catalog change?" a one-request check:
+
+```ts
+const res = await cloud.catalog.pull({ etag: previouslyStoredEtag });
+if (res.notModified) process.exit(0);            // nothing changed
+diffAgainstRepo(res.skills);                     // …otherwise inspect res.catalogVersion / skills
+```
+
+### Per-end-user personalization, end to end
+
+`endUserId` is an opaque id (same id space as telemetry). Skills scoped to it overlay the global
+layer — same `name` ⇒ the scoped skill wins for that user, everyone else keeps the global one:
+
+```ts
+// Tailor the global "deploy-checklist" for one user:
+await cloud.skills.create({
+  name: "deploy-checklist",            // same name as the global skill — no conflict:
+  endUserId: "user-123",               // scoping makes the pair coexist
+  description: "Deploy checklist for the EU cluster.",
+  body: "# EU deploy\n…",
+  status: "published",
+});
+
+const theirs = await cloud.catalog.pull({ scope: "user-123" }); // overlaid view
+const global = await cloud.catalog.pull({});                    // untouched
+
+// Analysis with the same id sees the overlaid catalog, and gap drafts inherit the scope:
+await cloud.intents.analyze({ messages, endUserId: "user-123" });
+```
+
+### Name lifecycle gotchas
+
+- Uniqueness is enforced only among **non-archived** skills: archive `foo`, and a new `foo` can
+  be created. The archived row keeps its id and history.
+- `skills.import` never deletes: removing a skill from your source folder does *not* archive it
+  in cloud on the next import. Archive explicitly.
+- `edit_skill` suggestions never propose renames; renames are always a deliberate
+  `skills.update`.
+
+### Timeouts, aborts, and re-issue policy
+
+All failures-to-respond surface as `code: "network_error"` with `status: null` — including the
+client-side timeout. There is **no built-in retry**. Reads (`list`, `get`, `pull`, `list`
+suggestions) are always safe to re-issue. For mutations, prefer re-reading state over blind
+retries: a timed-out `create` may still have committed server-side, and re-issuing it will
+surface as `name_conflict` — which is your signal to `list` and reconcile rather than a bug.
+
+---
+
+## Testing with `MockCloud`
+
+Your application's test suite shouldn't need a live API key, network access, or quota.
+`@ratel-ai/cloud-sdk/testing` (Node-only) ships `MockCloud` — an in-process, fetch-compatible
+mock of the whole v1 surface, the same one this SDK's own test suite runs against. Routes,
+status codes, and error bodies mirror the server, which matters most for the failure modes you
+can't provoke against production on demand: version races, review races, auth errors — all the
+error-handling paths documented above become three-line test cases.
+
+```ts
+import { RatelCloudSdk, CloudSdkError } from "@ratel-ai/cloud-sdk";
+import { MockCloud } from "@ratel-ai/cloud-sdk/testing";
+
+const mock = new MockCloud({
+  catalog: {
+    global: [{ id: "sk_1", name: "deploy-checklist", description: "…", tags: [], tools: [], metadata: {}, body: "…" }],
+    subjects: { "user-123": [/* per-user layer */] },
+  },
+  suggestions: [{ type: "new_skill", status: "pending" }],   // partials are filled with defaults
+  now: () => "2026-01-01T00:00:00.000Z",                     // injectable clock
+});
+
+const cloud = new RatelCloudSdk({ apiKey: mock.apiKey, fetch: mock.fetch });
+
+// State is inspectable for assertions:
+mock.skills;        // Map<id, CloudSkill>
+mock.suggestions;   // Map<id, CloudSuggestion>
+```
+
+What to know when asserting against it:
+
+- Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
+  real API.
+- ETags are computed with the real `protocol/v1` canonicalization, so conditional `pull`
+  behaves faithfully.
+- The intent **extraction** is a deterministic fixture, not the server pipeline: one intent per
+  unique `user` message, covered iff some published skill's name tokens all appear in the
+  message text; uncovered intents draft `new_skill` suggestions. Don't assert on extraction
+  quality — assert on your handling of the results.
 
 ## Protocol conformance
 
 The catalog wire shape and ETag algorithm are the frozen `protocol/v1` contract. This package
-vendors the protocol's conformance vectors and reproduces them byte-for-byte in `wire.test.ts`;
-the pure canonicalization helpers (`canonicalSkill`, `canonicalSet`, `resolve`,
-`ifNoneMatchMatches`) are exported.
+vendors the protocol's conformance vectors and reproduces them byte-for-byte in `wire.test.ts`.
+The pure canonicalization helpers are exported for tools that need to compute or verify catalog
+identity themselves:
+
+```ts
+import { canonicalSet, resolve, ifNoneMatchMatches } from "@ratel-ai/cloud-sdk";
+import { createHash } from "node:crypto";
+
+const skills = resolve(catalog, "user-123");            // overlay a scope on the global layer
+const etagHex = createHash("sha256")
+  .update(canonicalSet(skills), "utf8")
+  .digest("hex");                                       // == the server's catalogVersion
+ifNoneMatchMatches(`"${etagHex}"`, currentEtag);        // RFC 7232 weak comparison
+```
+
+The hashing step is intentionally left to you — the helpers are pure string/byte functions with
+no crypto dependency, so the module runs on any runtime.
+
+## Related packages
+
+This package covers the management side of Ratel Cloud. The runtime side lives elsewhere:
+
+- **`@ratel-ai/cloud`** (ratel repo) — the loader that syncs published skills into a running
+  agent (replica, refresh, ownership). This SDK deliberately keeps no runtime replica of the
+  catalog; agents should sync through the loader. The two share only the API key.
+- **Telemetry client** (ratel repo) — sends LLM-call telemetry, which feeds the usage signals
+  behind `suggestions.generate`.
+
+## License
+
+MIT © Agentified

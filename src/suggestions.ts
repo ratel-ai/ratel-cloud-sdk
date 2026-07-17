@@ -21,7 +21,7 @@ const GENERATE_TIMEOUT_MS = 300_000;
 
 /**
  * Review surface for machine-drafted catalog proposals
- * (`/suggestions*`, Bearer project key — live on ratel-cloud today).
+ * (`/suggestions*`, Bearer project key).
  */
 export class SuggestionsClient {
   constructor(private readonly transport: Transport) {}

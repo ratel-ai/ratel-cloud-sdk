@@ -62,6 +62,37 @@ describe("SkillsClient", () => {
     expect(updated.version).toBe(skill.version + 1);
   });
 
+  it("applies an unguarded update unconditionally when expectedVersion is omitted", async () => {
+    const { sdk } = makeSdk();
+    const skill = await sdk.skills.create({ name: "s", description: "old", body: "b" });
+    // Someone else edits first — an unguarded write still lands on top.
+    await sdk.skills.update(skill.id, { expectedVersion: skill.version, description: "theirs" });
+
+    const updated = await sdk.skills.update(skill.id, { description: "mine" });
+    expect(updated.description).toBe("mine");
+    expect(updated.version).toBe(skill.version + 2);
+  });
+
+  it("publishes and archives unguarded when expectedVersion is omitted", async () => {
+    const { sdk } = makeSdk();
+    const skill = await sdk.skills.create({ name: "s", description: "d", body: "b" });
+
+    const published = await sdk.skills.publish(skill.id);
+    expect(published.status).toBe("published");
+
+    const archived = await sdk.skills.archive(skill.id);
+    expect(archived.status).toBe("archived");
+  });
+
+  it("still rejects a stale guard on publish", async () => {
+    const { sdk } = makeSdk();
+    const skill = await sdk.skills.create({ name: "s", description: "d", body: "b" });
+    await expect(sdk.skills.publish(skill.id, { expectedVersion: 99 })).rejects.toMatchObject({
+      code: "conflict",
+      reason: "version_conflict",
+    });
+  });
+
   it("publish makes a skill pullable; archive removes it", async () => {
     const { sdk } = makeSdk();
     const skill = await sdk.skills.create({ name: "pub-me", description: "d", body: "b" });

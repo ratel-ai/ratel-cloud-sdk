@@ -1,7 +1,7 @@
 {
   "name": "@ratel-ai/cloud-sdk",
   "version": "0.1.0",
-  "description": "Management & intelligence client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API. Pure HTTP, no native addon.",
+  "description": "Management & supervised self-improvement client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API. Pure HTTP, no native addon.",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -10,10 +10,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./node": {
-      "types": "./dist/node/index.d.ts",
-      "default": "./dist/node/index.js"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",

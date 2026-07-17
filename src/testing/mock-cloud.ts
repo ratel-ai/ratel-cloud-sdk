@@ -23,8 +23,7 @@ import { canonicalSet, ifNoneMatchMatches, resolve } from "../wire.js";
  * fetch-compatible handler for `CloudSdkOptions.fetch`. Node-only (SHA-256 via
  * node:crypto).
  *
- * Routes and error bodies mirror ratel-cloud's v1 handlers (including the
- * planned S2 `/skills*` and S3 `/intents/analyze` contracts). The intent
+ * Routes and error bodies mirror ratel-cloud's v1 handlers. The intent
  * *extraction* here is a deterministic fixture — an intent per unique user
  * message, covered when a published skill's name tokens all appear in it — not
  * a reimplementation of the server pipeline.
@@ -257,7 +256,8 @@ export class MockCloud {
   private updateSkill(id: string, input: UpdateSkillInput): Response {
     const skill = this.skills.get(id);
     if (!skill) return Response.json({ error: "not_found" }, { status: 404 });
-    if (skill.version !== input.expectedVersion) {
+    // The version guard is opt-in: absent ⇒ unconditional edit, like the server.
+    if (input.expectedVersion !== undefined && skill.version !== input.expectedVersion) {
       return Response.json({ error: "conflict", reason: "version_conflict" }, { status: 409 });
     }
     if (
@@ -281,7 +281,8 @@ export class MockCloud {
     }
     const skill = this.skills.get(id);
     if (!skill) return Response.json({ error: "not_found" }, { status: 404 });
-    if (skill.version !== body.expectedVersion) {
+    // The version guard is opt-in: absent ⇒ unconditional transition, like the server.
+    if (body.expectedVersion !== undefined && skill.version !== body.expectedVersion) {
       return Response.json({ error: "conflict", reason: "version_conflict" }, { status: 409 });
     }
     skill.status = action === "publish" ? "published" : "archived";
