@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ratel Cloud SDK — analyze &amp; review</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1e222b;
+        --line: #2a2f3a;
+        --text: #e7e9ee;
+        --muted: #9aa2b1;
+        --accent: #6ea8fe;
+        --green: #3fb950;
+        --green-bg: #12261a;
+        --amber: #d29922;
+        --amber-bg: #2a2113;
+        --red: #f85149;
+        --radius: 10px;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+      header .spacer { flex: 1; }
+      .badge {
+        font: 600 11px/1 var(--mono);
+        padding: 5px 8px;
+        border-radius: 6px;
+        letter-spacing: 0.03em;
+      }
+      .badge.live { background: var(--green-bg); color: var(--green); border: 1px solid #1c5a2e; }
+      .badge.mock { background: var(--amber-bg); color: var(--amber); border: 1px solid #5a4718; }
+      .host { font: 11px/1 var(--mono); color: var(--muted); }
+      main {
+        display: grid;
+        grid-template-columns: minmax(360px, 520px) 1fr;
+        gap: 18px;
+        padding: 18px 20px 60px;
+        max-width: 1220px;
+        margin: 0 auto;
+      }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .card h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin: 0 0 12px;
+        font-weight: 600;
+      }
+      .presets { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+      .chip {
+        font: 500 12px/1 system-ui, sans-serif;
+        padding: 7px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        cursor: pointer;
+      }
+      .chip:hover { border-color: var(--accent); color: var(--accent); }
+      textarea {
+        width: 100%;
+        background: #0c0e13;
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 12px;
+        font: 12px/1.55 var(--mono);
+        resize: vertical;
+        min-height: 300px;
+        tab-size: 2;
+        white-space: pre;
+        overflow-wrap: normal;
+        overflow-x: auto;
+      }
+      input {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 7px;
+        padding: 7px 9px;
+        font: inherit;
+        width: 100%;
+      }
+      .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+      .row label { color: var(--muted); font-size: 12px; white-space: nowrap; font-family: var(--mono); }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border-radius: 7px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 8px 12px;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.primary {
+        background: var(--accent);
+        color: #081018;
+        border-color: var(--accent);
+        font-weight: 600;
+      }
+      button.approve { border-color: #1c5a2e; color: var(--green); }
+      button.approve:hover:not(:disabled) { background: var(--green-bg); }
+      button.reject { border-color: #5a2020; color: var(--red); }
+      button.reject:hover:not(:disabled) { background: #2a1313; }
+      .toolbar { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+      .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+      .item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 11px 12px;
+        margin-bottom: 9px;
+        background: var(--panel-2);
+      }
+      .item .top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
+      .item .text { font-size: 13px; }
+      .tag {
+        font: 600 10px/1 var(--mono);
+        padding: 4px 6px;
+        border-radius: 5px;
+        letter-spacing: 0.03em;
+      }
+      .tag.covered { background: var(--green-bg); color: var(--green); }
+      .tag.gap { background: var(--amber-bg); color: var(--amber); }
+      .tag.type { background: #1a2233; color: var(--accent); }
+      .tag.status { background: #23262e; color: var(--muted); }
+      .meta { color: var(--muted); font: 11px/1.4 var(--mono); margin-top: 4px; word-break: break-all; }
+      .item.covered-i { border-left: 3px solid var(--green); }
+      .item.gap-i { border-left: 3px solid var(--amber); }
+      /* the drafted suggestion, nested inside its gap intent */
+      .sub {
+        margin: 10px 0 2px 2px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-left: 2px solid var(--accent);
+        border-radius: 0 8px 8px 0;
+        background: #14171e;
+      }
+      .sub .sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
+      .sub .label { font: 600 10px/1 var(--mono); color: var(--muted); letter-spacing: 0.04em; }
+      .sub .none { color: var(--muted); font-size: 12px; font-style: italic; }
+      .sugg .actions { display: flex; gap: 8px; margin-top: 10px; }
+      .sugg .rationale { font-size: 13px; }
+      .sugg .patch { margin-top: 6px; font-size: 12px; color: var(--muted); }
+      .flash { margin: 0 20px; max-width: 1220px; }
+      .flash .err {
+        background: #2a1313;
+        border: 1px solid #5a2020;
+        color: #ffb4ae;
+        border-radius: 8px;
+        padding: 9px 12px;
+        font: 12px/1.4 var(--mono);
+      }
+      .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+      .spin { opacity: 0.6; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Ratel Cloud SDK</h1>
+      <span id="mode" class="badge mock">…</span>
+      <span id="host" class="host"></span>
+      <span class="spacer"></span>
+      <span class="host">analyze → review suggestions</span>
+    </header>
+
+    <div class="flash" id="flash"></div>
+
+    <main>
+      <section class="card">
+        <h2>Conversation (JSON)</h2>
+        <div class="presets" id="presets"></div>
+        <textarea id="conversation" spellcheck="false"></textarea>
+        <div class="hint">
+          A JSON array of <code>{ role, content }</code> messages, or an object
+          <code>{ messages, endUserId }</code>. Roles: user · assistant · system · tool.
+        </div>
+        <div class="toolbar">
+          <button class="primary" id="analyze">Analyze conversation</button>
+          <span class="hint" id="analyzeMeta" style="margin-top: 0"></span>
+        </div>
+      </section>
+
+      <section>
+        <div class="card">
+          <h2>Intents &amp; coverage</h2>
+          <div id="intents"><div class="empty">Run an analysis to see extracted intents. Covered intents show the matched skill; gaps nest the drafted suggestion to review.</div></div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, props = {}, ...kids) => {
+        const n = Object.assign(document.createElement(tag), props);
+        for (const k of kids) n.append(k);
+        return n;
+      };
+
+      /* — presets: multi-turn conversations, mixed roles ———————————————————— */
+      const PRESETS = {
+        "Billing & delivery": [
+          { role: "system", content: "You are a support agent for an online electronics store. Be concise." },
+          { role: "user", content: "I was charged twice for order #48213 — there are two identical charges on my card. I want a refund for the duplicate one." },
+          { role: "assistant", content: "I see two authorizations of $329.00 on the same card for order #48213. The second is a duplicate; I can reverse it." },
+          { role: "user", content: "Thanks. Also the shipping status still says 'pending' a week after I ordered — is my package actually moving?" },
+          { role: "tool", content: "{\"order\":\"48213\",\"carrier\":\"UPS\",\"shipping_status\":\"label_created\",\"last_scan\":null}" },
+          { role: "assistant", content: "A label was created but the carrier hasn't scanned the parcel yet, so it's still with the warehouse." },
+          { role: "user", content: "Can I change the delivery address now, before it actually ships?" },
+          { role: "user", content: "And I'll need a proper VAT invoice for this order for my company's accounting." },
+        ],
+        "Account & security": [
+          { role: "system", content: "You are the assistant for a B2B SaaS analytics product." },
+          { role: "user", content: "I can't log in — I keep requesting a password reset but the email never arrives." },
+          { role: "assistant", content: "Let me check. Resets go to the address on file; corporate spam filters sometimes hold them." },
+          { role: "user", content: "Once I'm back in, how do I set up SSO with Okta so my whole team signs in through it?" },
+          { role: "user", content: "And can I enforce 2FA for every member of the workspace, not just admins?" },
+          { role: "assistant", content: "SSO and workspace-wide 2FA enforcement are both on the Enterprise plan." },
+          { role: "user", content: "How do I export an audit log of who accessed which dashboard last month?" },
+        ],
+        "Developer / API": [
+          { role: "user", content: "Your webhooks are failing against my endpoint with a 401 — how am I supposed to verify the signature you send?" },
+          { role: "assistant", content: "Each delivery includes an HMAC signature header computed over the raw body with your signing secret." },
+          { role: "user", content: "Do I need to rotate my API key, and if I rotate it will existing integrations keep working during the overlap?" },
+          { role: "tool", content: "{\"key_id\":\"rtl_live_2f\",\"created\":\"2026-01-04\",\"last_used\":\"2026-07-23\"}" },
+          { role: "user", content: "Also I want a refund for last month — the API was returning 500s for most of a day and it broke our sync." },
+        ],
+      };
+
+      function loadPreset(name) {
+        $("conversation").value = JSON.stringify(PRESETS[name], null, 2);
+      }
+
+      /* — conversation body — */
+      function parseBody() {
+        let parsed;
+        try {
+          parsed = JSON.parse($("conversation").value);
+        } catch (e) {
+          throw { error: "invalid_json", message: e.message };
+        }
+        const messages = Array.isArray(parsed) ? parsed : parsed?.messages;
+        if (!Array.isArray(messages) || messages.length === 0) {
+          throw { error: "invalid", message: "expected a non-empty array of messages (or { messages, endUserId })" };
+        }
+        const body = { messages };
+        const endUserId = Array.isArray(parsed) ? undefined : parsed.endUserId;
+        if (typeof endUserId === "string" && endUserId.length > 0) body.endUserId = endUserId;
+        return body;
+      }
+
+      /* — error flash — */
+      function flash(err) {
+        $("flash").replaceChildren(
+          err ? el("div", { className: "err", textContent: `${err.error ?? "error"}${err.reason ? " / " + err.reason : ""} — ${err.message ?? ""}` }) : "",
+        );
+      }
+
+      async function api(method, path, body) {
+        const res = await fetch(path, {
+          method,
+          headers: body ? { "content-type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw json;
+        return json;
+      }
+
+      /* — renderers ——————————————————————————————————————————————————————————
+       * One card per intent. Covered → matched-skill meta. Gap → the drafted
+       * suggestion nested inside, with Approve / Reject inline. */
+      function suggestionBlock(s) {
+        const patch = s.patch ?? {};
+        const block = el("div", { className: "sub sugg" });
+        block.append(
+          el("div", { className: "sub-head" },
+            el("span", { className: "label", textContent: "SUGGESTION" }),
+            el("span", { className: "tag type", textContent: s.type }),
+            el("span", { className: "tag status", textContent: s.signalKind }),
+          ),
+          el("div", { className: "rationale", textContent: s.rationale || "(no rationale)" }),
+        );
+        if (patch.name || patch.description) {
+          block.append(el("div", { className: "patch", textContent: `${patch.name ? patch.name + " — " : ""}${patch.description ?? ""}` }));
+        }
+        const approve = el("button", { className: "approve", textContent: "Approve" });
+        const reject = el("button", { className: "reject", textContent: "Reject" });
+        const actions = el("div", { className: "actions" }, approve, reject);
+        const review = async (action, btn) => {
+          approve.disabled = reject.disabled = true;
+          btn.classList.add("spin");
+          try {
+            const { suggestion } = await api("POST", `/api/suggestions/${s.id}/${action}`);
+            flash(null);
+            const parts = [el("span", { className: "tag status", textContent: suggestion.status })];
+            if (action === "approve" && suggestion.createdSkillId) {
+              parts.push(el("span", { className: "meta", textContent: `created skill ${suggestion.createdSkillId}`, style: "margin-top:0" }));
+            }
+            actions.replaceChildren(...parts);
+          } catch (e) {
+            flash(e);
+            approve.disabled = reject.disabled = false;
+            btn.classList.remove("spin");
+          }
+        };
+        approve.onclick = () => review("approve", approve);
+        reject.onclick = () => review("reject", reject);
+        block.append(actions);
+        return block;
+      }
+
+      function renderResults(intents, suggByIntentId) {
+        const box = $("intents");
+        if (!intents.length) return box.replaceChildren(el("div", { className: "empty", textContent: "No intents extracted." }));
+        box.replaceChildren(
+          ...intents.map((i) => {
+            const card = el("div", { className: `item ${i.covered ? "covered-i" : "gap-i"}` });
+            card.append(
+              el("div", { className: "top" },
+                el("span", { className: `tag ${i.covered ? "covered" : "gap"}`, textContent: i.covered ? "covered" : "gap" }),
+                el("span", { className: "text", textContent: i.text }),
+              ),
+            );
+            if (i.covered) {
+              card.append(el("div", { className: "meta", textContent: `matchedSkillId=${i.matchedSkillId} · score=${i.score}` }));
+            } else {
+              const s = suggByIntentId.get(i.id);
+              card.append(s ? suggestionBlock(s) : el("div", { className: "sub" }, el("span", { className: "none", textContent: "no suggestion drafted for this gap" })));
+            }
+            return card;
+          }),
+        );
+      }
+
+      // Map each uncovered intent to its drafted suggestion. Prefer the server's
+      // explicit sourceQueryIntentId link; fall back to positional zip against
+      // this run's suggestionIds (both are emitted in intent order).
+      function mapSuggestions(result, pending) {
+        const byId = new Map(pending.map((s) => [s.id, s]));
+        const map = new Map();
+        const uncovered = result.intents.filter((i) => !i.covered);
+        uncovered.forEach((intent, k) => {
+          let s = pending.find((su) => su.sourceQueryIntentId && su.sourceQueryIntentId === intent.id);
+          if (!s) s = byId.get(result.suggestionIds[k]);
+          if (s) map.set(intent.id, s);
+        });
+        return map;
+      }
+
+      /* — actions — */
+      $("analyze").onclick = async () => {
+        const btn = $("analyze");
+        let body;
+        try {
+          body = parseBody();
+        } catch (e) {
+          return flash(e);
+        }
+        btn.disabled = true;
+        btn.textContent = "Analyzing…";
+        try {
+          const result = await api("POST", "/api/analyze", body);
+          const { suggestions } = await api("GET", "/api/suggestions?status=pending");
+          flash(null);
+          renderResults(result.intents, mapSuggestions(result, suggestions));
+          const gaps = result.intents.filter((i) => !i.covered).length;
+          $("analyzeMeta").textContent = `runId=${result.runId} · cached=${result.cached} · catalogVersion=${String(result.catalogVersion).slice(0, 12)}… · ${gaps} gap(s), ${result.suggestionIds.length} suggestion(s)`;
+        } catch (e) {
+          flash(e);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Analyze conversation";
+        }
+      };
+
+      /* — boot — */
+      (async () => {
+        const names = Object.keys(PRESETS);
+        for (const name of names) {
+          const chip = el("button", { className: "chip", textContent: name });
+          chip.onclick = () => loadPreset(name);
+          $("presets").append(chip);
+        }
+        loadPreset(names[0]);
+
+        try {
+          const mode = await api("GET", "/api/mode");
+          const badge = $("mode");
+          badge.textContent = mode.live ? "LIVE" : "MOCK";
+          badge.className = `badge ${mode.live ? "live" : "mock"}`;
+          $("host").textContent = mode.baseUrl;
+        } catch { /* leave defaults */ }
+      })();
+    </script>
+  </body>
+</html>

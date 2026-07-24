@@ -47,7 +47,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "example:e2e": "node examples/e2e.mjs",
+    "example:ui": "node examples/ui/server.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
