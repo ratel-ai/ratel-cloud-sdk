@@ -109,10 +109,24 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, result);
   }
 
-  if (method === "GET" && pathname === "/api/suggestions") {
-    const status = new URL(req.url, "http://x").searchParams.get("status") ?? "pending";
-    const result = await sdk.suggestions.list({ status });
-    return sendJson(res, 200, result);
+  // Drafting is async: suggest enqueues a job, the browser polls it, then fetches
+  // the drafted proposal. Each endpoint maps to exactly one SDK call.
+  const suggest = pathname.match(/^\/api\/intents\/([^/]+)\/suggest$/);
+  if (method === "POST" && suggest) {
+    const [, id] = suggest;
+    return sendJson(res, 200, await sdk.intents.suggest(id));
+  }
+
+  const job = pathname.match(/^\/api\/jobs\/([^/]+)$/);
+  if (method === "GET" && job) {
+    const [, id] = job;
+    return sendJson(res, 200, await sdk.jobs.get(id));
+  }
+
+  const suggestionById = pathname.match(/^\/api\/suggestions\/([^/]+)$/);
+  if (method === "GET" && suggestionById) {
+    const [, id] = suggestionById;
+    return sendJson(res, 200, { suggestion: await sdk.suggestions.get(id) });
   }
 
   const review = pathname.match(/^\/api\/suggestions\/([^/]+)\/(approve|reject)$/);

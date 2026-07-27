@@ -212,7 +212,7 @@
       <section>
         <div class="card">
           <h2>Intents &amp; coverage</h2>
-          <div id="intents"><div class="empty">Run an analysis to see extracted intents. Covered intents show the matched skill; gaps nest the drafted suggestion to review.</div></div>
+          <div id="intents"><div class="empty">Run an analysis to see extracted intents. Covered intents show the matched skill; gaps get a “Suggest a skill” button that drafts a proposal to review.</div></div>
         </div>
       </section>
     </main>
@@ -296,8 +296,9 @@
       }
 
       /* — renderers ——————————————————————————————————————————————————————————
-       * One card per intent. Covered → matched-skill meta. Gap → the drafted
-       * suggestion nested inside, with Approve / Reject inline. */
+       * One card per intent. Covered → matched-skill meta. Gap → a "Suggest a
+       * skill" button that runs the async draft flow (suggest → poll job →
+       * fetch) and nests the drafted suggestion with Approve / Reject inline. */
       function suggestionBlock(s) {
         const patch = s.patch ?? {};
         const block = el("div", { className: "sub sugg" });
@@ -338,7 +339,51 @@
         return block;
       }
 
-      function renderResults(intents, suggByIntentId) {
+      // Poll a job until it's terminal (mock jobs finish immediately; live ones
+      // take a moment while the model drafts).
+      async function pollJob(jobId, { tries = 40, intervalMs = 700 } = {}) {
+        for (let i = 0; i < tries; i++) {
+          const job = await api("GET", `/api/jobs/${jobId}`);
+          if (job.status === "done" || job.status === "error") return job;
+          await new Promise((r) => setTimeout(r, intervalMs));
+        }
+        throw { error: "timeout", message: "the drafting job did not finish in time" };
+      }
+
+      // The gap → suggest → poll → fetch → review flow, driven by the button.
+      async function draftForIntent(intentId, slot, button) {
+        button.disabled = true;
+        button.classList.add("spin");
+        button.textContent = "Drafting…";
+        try {
+          const { jobId } = await api("POST", `/api/intents/${intentId}/suggest`);
+          const job = await pollJob(jobId);
+          flash(null);
+          if (job.status === "error") {
+            slot.replaceChildren(el("span", { className: "none", textContent: `drafting failed: ${job.error ?? "unknown error"}` }));
+            return;
+          }
+          const result = job.result || {};
+          if (result.suggestionId) {
+            const { suggestion } = await api("GET", `/api/suggestions/${result.suggestionId}`);
+            slot.replaceChildren(suggestionBlock(suggestion));
+          } else {
+            const why = result.reason === "not_configured"
+              ? "drafting isn't configured on the server (no ANTHROPIC_API_KEY)"
+              : result.reason === "exists"
+                ? "a draft already exists for this intent"
+                : "no suggestion was produced";
+            slot.replaceChildren(el("span", { className: "none", textContent: why }));
+          }
+        } catch (e) {
+          flash(e);
+          button.disabled = false;
+          button.classList.remove("spin");
+          button.textContent = "Suggest a skill";
+        }
+      }
+
+      function renderResults(intents) {
         const box = $("intents");
         if (!intents.length) return box.replaceChildren(el("div", { className: "empty", textContent: "No intents extracted." }));
         box.replaceChildren(
@@ -353,27 +398,16 @@
             if (i.covered) {
               card.append(el("div", { className: "meta", textContent: `matchedSkillId=${i.matchedSkillId} · score=${i.score}` }));
             } else {
-              const s = suggByIntentId.get(i.id);
-              card.append(s ? suggestionBlock(s) : el("div", { className: "sub" }, el("span", { className: "none", textContent: "no suggestion drafted for this gap" })));
+              // A slot the drafted suggestion replaces the button in.
+              const slot = el("div", { className: "sub" });
+              const button = el("button", { className: "approve", textContent: "Suggest a skill" });
+              button.onclick = () => draftForIntent(i.id, slot, button);
+              slot.append(button);
+              card.append(slot);
             }
             return card;
           }),
         );
-      }
-
-      // Map each uncovered intent to its drafted suggestion. Prefer the server's
-      // explicit sourceQueryIntentId link; fall back to positional zip against
-      // this run's suggestionIds (both are emitted in intent order).
-      function mapSuggestions(result, pending) {
-        const byId = new Map(pending.map((s) => [s.id, s]));
-        const map = new Map();
-        const uncovered = result.intents.filter((i) => !i.covered);
-        uncovered.forEach((intent, k) => {
-          let s = pending.find((su) => su.sourceQueryIntentId && su.sourceQueryIntentId === intent.id);
-          if (!s) s = byId.get(result.suggestionIds[k]);
-          if (s) map.set(intent.id, s);
-        });
-        return map;
       }
 
       /* — actions — */
@@ -389,11 +423,10 @@
         btn.textContent = "Analyzing…";
         try {
           const result = await api("POST", "/api/analyze", body);
-          const { suggestions } = await api("GET", "/api/suggestions?status=pending");
           flash(null);
-          renderResults(result.intents, mapSuggestions(result, suggestions));
+          renderResults(result.intents);
           const gaps = result.intents.filter((i) => !i.covered).length;
-          $("analyzeMeta").textContent = `runId=${result.runId} · cached=${result.cached} · catalogVersion=${String(result.catalogVersion).slice(0, 12)}… · ${gaps} gap(s), ${result.suggestionIds.length} suggestion(s)`;
+          $("analyzeMeta").textContent = `runId=${result.runId} · cached=${result.cached} · catalogVersion=${String(result.catalogVersion).slice(0, 12)}… · ${result.intents.length} intent(s), ${gaps} gap(s)`;
         } catch (e) {
           flash(e);
         } finally {

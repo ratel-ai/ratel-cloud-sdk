@@ -1,4 +1,5 @@
 import { IntentsClient } from "./intents.js";
+import { JobsClient } from "./jobs.js";
 import { SkillsClient } from "./skills.js";
 import { SuggestionsClient } from "./suggestions.js";
 import { type CloudSdkOptions, Transport } from "./transport.js";
@@ -16,17 +17,20 @@ export class RatelCloudSdk {
   readonly skills: SkillsClient;
   readonly suggestions: SuggestionsClient;
   readonly intents: IntentsClient;
+  readonly jobs: JobsClient;
 
   constructor(options: CloudSdkOptions) {
     const transport = new Transport(options);
     this.skills = new SkillsClient(transport);
     this.suggestions = new SuggestionsClient(transport);
     this.intents = new IntentsClient(transport);
+    this.jobs = new JobsClient(transport);
   }
 }
 
 export { CloudSdkError, type CloudSdkErrorCode } from "./errors.js";
-export { IntentsClient } from "./intents.js";
+export { IntentsClient, type ListIntentsOptions } from "./intents.js";
+export { JobsClient, type WaitForJobOptions } from "./jobs.js";
 export { type ListSkillsOptions, type ListSkillsResult, SkillsClient } from "./skills.js";
 export { type ListSuggestionsOptions, SuggestionsClient } from "./suggestions.js";
 export {

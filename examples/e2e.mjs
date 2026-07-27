@@ -7,9 +7,10 @@
 //     no credentials) so the script is always runnable as a demo.
 //
 // It exercises the client surface — skills lifecycle (create → get → list →
-// update → publish), bulk import, and conversation analyze (twice, to show the
-// content-addressed cache) → suggestions review — and archives everything it
-// created on the way out, so a live project is left clean.
+// update → publish), bulk import, and the async intent flow (analyze twice to
+// show the content-addressed cache → list the intent ledger → suggest a skill →
+// poll the job → fetch & approve the drafted proposal) — and archives everything
+// it created on the way out, so a live project is left clean.
 //
 // (Reading the published catalog is intentionally NOT part of this client — that
 //  is the ratel cloud loader's job — so there is no catalog step here.)
@@ -169,29 +170,53 @@ try {
     return `created=${report.created.length} updated=${report.updated.length} unchanged=${report.unchanged.length}`;
   });
 
+  const conversation = [{ role: "user", content: "how do I get a refund for my order?" }];
   let analyze1;
-  await step("analyze conversation", async () => {
-    analyze1 = await sdk.intents.analyze({
-      messages: [{ role: "user", content: "how do I get a refund for my order?" }],
-    });
+  let firstIntentId = null;
+  await step("analyze conversation (intents + coverage, no drafting)", async () => {
+    analyze1 = await sdk.intents.analyze({ messages: conversation });
     assert(typeof analyze1.runId === "string", "runId present");
     assert(Array.isArray(analyze1.intents), "intents is an array");
     assert(analyze1.cached === false, "first analyze is not cached");
-    return `runId=${analyze1.runId} intents=${analyze1.intents.length} suggestions=${analyze1.suggestionIds.length} cv=${String(analyze1.catalogVersion).slice(0, 8)}`;
+    assert(!("suggestionIds" in analyze1), "analyze no longer returns suggestionIds");
+    firstIntentId = analyze1.intents[0]?.id ?? null;
+    const covered = analyze1.intents.filter((i) => i.covered).length;
+    return `runId=${analyze1.runId} intents=${analyze1.intents.length} (${covered} covered) cv=${String(analyze1.catalogVersion).slice(0, 8)}`;
   });
 
   await step("re-analyze identical conversation → cache hit", async () => {
-    const again = await sdk.intents.analyze({
-      messages: [{ role: "user", content: "how do I get a refund for my order?" }],
-    });
+    const again = await sdk.intents.analyze({ messages: conversation });
     assert(again.cached === true, "identical conversation is a cache hit");
     assert(again.runId === analyze1.runId, "cache hit returns the same run");
     return "cached=true";
   });
 
-  await step("list pending suggestions", async () => {
-    const { count, suggestions } = await sdk.suggestions.list({ status: "pending" });
-    return `count=${count}${suggestions[0] ? ` first=${suggestions[0].type}/${suggestions[0].signalKind}` : ""}`;
+  await step("list intents (recurring-ask ledger)", async () => {
+    const { total, intents } = await sdk.intents.list();
+    return `total=${total}${intents[0] ? ` top="${intents[0].text.slice(0, 28)}" ×${intents[0].occurrences}` : ""}`;
+  });
+
+  let draftedSuggestionId = null;
+  await step("suggest a skill for the intent → poll the job", async () => {
+    if (!firstIntentId) return "skipped (no intents extracted)";
+    const { jobId } = await sdk.intents.suggest(firstIntentId);
+    const job = await sdk.jobs.waitFor(jobId, { intervalMs: 500, timeoutMs: 60_000 });
+    assert(job.status === "done" || job.status === "error", "job reaches a terminal state");
+    assert(job.kind === "suggest_skill", "job is a suggest_skill job");
+    draftedSuggestionId = job.result?.suggestionId ?? null;
+    const reason = job.result?.reason;
+    return `status=${job.status} suggestionId=${draftedSuggestionId ?? "(none)"}${reason ? ` reason=${reason}` : ""}`;
+  });
+
+  await step("fetch + approve the drafted suggestion", async () => {
+    // Live projects without a drafting key finish the job with reason
+    // "not_configured" and no suggestion — that's a valid outcome, not a failure.
+    if (!draftedSuggestionId) return "skipped (nothing drafted — no drafting key on the server?)";
+    const suggestion = await sdk.suggestions.get(draftedSuggestionId);
+    assert(suggestion.status === "pending", "drafted suggestion is pending");
+    const approved = await sdk.suggestions.approve(draftedSuggestionId);
+    if (approved.createdSkillId) createdIds.push(approved.createdSkillId);
+    return `approved → createdSkill=${approved.createdSkillId ?? "(none)"}`;
   });
 } finally {
   /* — cleanup: archive everything we created, so a live project stays clean — */

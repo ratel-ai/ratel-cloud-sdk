@@ -30,8 +30,9 @@ so it doubles as a smoke test in CI against a live staging project.
 ## `ui/` — analyze &amp; review console
 
 A tiny web UI for the human-in-the-loop half of the SDK: paste a conversation,
-**analyze** it (extracted intents + per-intent coverage verdicts), and
-**approve / reject** the suggestions drafted for coverage gaps.
+**analyze** it (extracted intents + per-intent coverage verdicts), click
+**Suggest a skill** on a gap to run the async draft flow (suggest → poll the job
+→ fetch the proposal), and **approve / reject** what comes back.
 
 `ui/server.mjs` is a dependency-free `node:http` server that holds the project
 key and proxies a narrow JSON API to the SDK; `ui/index.html` is the vanilla-JS
@@ -47,9 +48,12 @@ RATEL_API_KEY=rtl_… pnpm run example:ui
 PORT=9000 RATEL_API_KEY=rtl_… RATEL_BASE_URL=https://host/api/v1 pnpm run example:ui
 ```
 
-The backend surface (all same-origin): `GET /api/mode`, `POST /api/analyze`,
-`GET /api/suggestions?status=`, `POST /api/suggestions/{id}/{approve|reject}`.
+The backend surface (all same-origin, each mapping to one SDK call): `GET
+/api/mode`, `POST /api/analyze`, `POST /api/intents/{id}/suggest`, `GET
+/api/jobs/{id}`, `GET /api/suggestions/{id}`, `POST
+/api/suggestions/{id}/{approve|reject}`.
 
 > Note: on a live project, suggestion **drafting** needs `ANTHROPIC_API_KEY`
-> server-side — without it, analysis still returns intents and coverage
-> verdicts, but no `new_skill` suggestions are drafted to review.
+> server-side. Without it, analysis still returns intents and coverage verdicts,
+> but the suggest job finishes with `result.reason: "not_configured"` — the UI
+> shows that inline instead of a drafted suggestion.
