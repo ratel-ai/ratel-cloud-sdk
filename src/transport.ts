@@ -5,6 +5,45 @@ export const DEFAULT_BASE_URL = "https://cloud.ratel.sh/api/v1";
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** A structured request/response/error event emitted for logging. The auth
+ * header is never included. `path` includes the query string; `body` is the
+ * parsed response JSON. */
+export type CloudSdkLogEvent =
+  | { phase: "request"; method: string; path: string; url: string }
+  | {
+      phase: "response";
+      method: string;
+      path: string;
+      url: string;
+      status: number;
+      durationMs: number;
+      body: unknown;
+    }
+  | {
+      phase: "error";
+      method: string;
+      path: string;
+      url: string;
+      durationMs: number;
+      error: string;
+    };
+
+/** The console sink used when `debug: true` and no custom `logger` is provided. */
+export function consoleLogEvent(event: CloudSdkLogEvent): void {
+  if (event.phase === "request") {
+    console.log(`[ratel-cloud] → ${event.method} ${event.path}`);
+  } else if (event.phase === "response") {
+    console.log(
+      `[ratel-cloud] ← ${event.status} ${event.method} ${event.path} (${event.durationMs}ms)`,
+      event.body,
+    );
+  } else {
+    console.log(
+      `[ratel-cloud] ✗ ${event.method} ${event.path} — ${event.error} (${event.durationMs}ms)`,
+    );
+  }
+}
+
 export interface CloudSdkOptions {
   /** Project API key (`rtl_…`), sent as `Authorization: Bearer <key>`. */
   apiKey: string;
@@ -14,6 +53,12 @@ export interface CloudSdkOptions {
   fetch?: typeof fetch;
   /** Per-request timeout. Long-running calls (analyze, generate) override this. */
   timeoutMs?: number;
+  /** Log each request and its response/error to the console (never the auth
+   * header). Convenience for {@link consoleLogEvent}; ignored if `logger` is set. */
+  debug?: boolean;
+  /** Custom log sink; receives structured {@link CloudSdkLogEvent}s. Takes
+   * precedence over `debug`. */
+  logger?: (event: CloudSdkLogEvent) => void;
 }
 
 export interface RequestOptions {
@@ -42,12 +87,14 @@ export class Transport {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly log: ((event: CloudSdkLogEvent) => void) | undefined;
 
   constructor(options: CloudSdkOptions) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetch ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.log = options.logger ?? (options.debug ? consoleLogEvent : undefined);
   }
 
   async request(
@@ -55,15 +102,17 @@ export class Transport {
     path: string,
     opts: RequestOptions = {},
   ): Promise<TransportResponse> {
-    let url = this.baseUrl + path;
+    let suffix = "";
     if (opts.query) {
       const params = new URLSearchParams();
       for (const [k, v] of Object.entries(opts.query)) {
         if (v !== undefined) params.set(k, v);
       }
       const qs = params.toString();
-      if (qs) url += `?${qs}`;
+      if (qs) suffix = `?${qs}`;
     }
+    const url = this.baseUrl + path + suffix;
+    const loggedPath = path + suffix;
 
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.apiKey}`,
@@ -75,6 +124,9 @@ export class Transport {
       bodyInit = JSON.stringify(opts.body);
     }
 
+    this.log?.({ phase: "request", method, path: loggedPath, url });
+    const startedAt = Date.now();
+
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
@@ -84,7 +136,16 @@ export class Transport {
         signal: AbortSignal.timeout(opts.timeoutMs ?? this.timeoutMs),
       });
     } catch (err) {
-      throw new CloudSdkError(`Ratel Cloud request failed: ${errorMessage(err)}`, {
+      const message = errorMessage(err);
+      this.log?.({
+        phase: "error",
+        method,
+        path: loggedPath,
+        url,
+        durationMs: Date.now() - startedAt,
+        error: message,
+      });
+      throw new CloudSdkError(`Ratel Cloud request failed: ${message}`, {
         status: null,
         code: "network_error",
       });
@@ -99,6 +160,16 @@ export class Transport {
         json = null;
       }
     }
+
+    this.log?.({
+      phase: "response",
+      method,
+      path: loggedPath,
+      url,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      body: json,
+    });
 
     const ok =
       (response.status >= 200 && response.status < 300) ||

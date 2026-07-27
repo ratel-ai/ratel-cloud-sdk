@@ -30,10 +30,12 @@ const apiKey = process.env.RATEL_API_KEY;
 const baseUrl = process.env.RATEL_BASE_URL;
 const live = Boolean(apiKey);
 const effectiveBaseUrl = baseUrl ?? "https://cloud.ratel.sh/api/v1";
+// Set RATEL_DEBUG=1 to log every SDK request + response in this server's console.
+const debug = Boolean(process.env.RATEL_DEBUG);
 
 let sdk;
 if (live) {
-  sdk = new RatelCloudSdk({ apiKey, ...(baseUrl ? { baseUrl } : {}) });
+  sdk = new RatelCloudSdk({ apiKey, debug, ...(baseUrl ? { baseUrl } : {}) });
 } else {
   // Seed a handful of published skills so the presets produce a realistic mix
   // of covered intents (a user message containing the skill's name token) and
@@ -57,7 +59,7 @@ if (live) {
       ],
     },
   });
-  sdk = new RatelCloudSdk({ apiKey: "rtl_test_key", fetch: mock.fetch });
+  sdk = new RatelCloudSdk({ apiKey: "rtl_test_key", debug, fetch: mock.fetch });
 }
 
 /* — helpers ——————————————————————————————————————————————————————————————— */

@@ -34,7 +34,9 @@ export { JobsClient, type WaitForJobOptions } from "./jobs.js";
 export { type ListSkillsOptions, type ListSkillsResult, SkillsClient } from "./skills.js";
 export { type ListSuggestionsOptions, SuggestionsClient } from "./suggestions.js";
 export {
+  type CloudSdkLogEvent,
   type CloudSdkOptions,
+  consoleLogEvent,
   DEFAULT_BASE_URL,
   DEFAULT_TIMEOUT_MS,
   Transport,

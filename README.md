@@ -45,8 +45,14 @@ const cloud = new RatelCloudSdk({
   baseUrl: "https://cloud.ratel.sh/api/v1",     // default; include the /api/v1 prefix
   timeoutMs: 30_000,                            // default per-request timeout
   fetch: customFetch,                           // injectable (testing, proxies, instrumentation)
+  debug: true,                                  // log each request + response to the console
 });
 ```
+
+Set `debug: true` to log every call — `→ GET /skills?status=published` on the way out, `← 200 …`
+with the parsed response body on the way back (the auth header is never logged). For structured
+logging, pass a `logger: (event: CloudSdkLogEvent) => void` sink instead (it takes precedence over
+`debug`); each event is a `request`, `response` (with `status`, `durationMs`, `body`), or `error`.
 
 Some calls override `timeoutMs` with a budget of their own — `suggestions.generate` (5 min) and
 `intents.analyze` (2 min); everything else uses yours. Drafting itself is an async job you poll

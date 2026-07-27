@@ -65,9 +65,12 @@ const live = Boolean(apiKey);
 const runId = Date.now().toString(36);
 const NS = `sdk-e2e-${runId}`;
 
+// Set RATEL_DEBUG=1 to log every SDK request + response to the console.
+const debug = Boolean(process.env.RATEL_DEBUG);
+
 const sdk = live
-  ? new RatelCloudSdk({ apiKey, ...(baseUrl ? { baseUrl } : {}) })
-  : new RatelCloudSdk({ apiKey: "rtl_test_key", fetch: new MockCloud().fetch });
+  ? new RatelCloudSdk({ apiKey, debug, ...(baseUrl ? { baseUrl } : {}) })
+  : new RatelCloudSdk({ apiKey: "rtl_test_key", debug, fetch: new MockCloud().fetch });
 
 console.log(
   live

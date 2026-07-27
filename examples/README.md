@@ -27,6 +27,15 @@ RATEL_API_KEY=rtl_… RATEL_BASE_URL=https://my-host/api/v1 pnpm run example:e2e
 Each step prints a `✓`/`✗` line; the process exits non-zero if any step fails,
 so it doubles as a smoke test in CI against a live staging project.
 
+Set `RATEL_DEBUG=1` (either example) to also log every SDK request + response —
+`→ POST /intents/analyze` … `← 200 …` with the parsed body — so you can see
+exactly which endpoints are hit:
+
+```bash
+RATEL_DEBUG=1 RATEL_API_KEY=rtl_… pnpm run example:ui   # logs in the server console
+RATEL_DEBUG=1 pnpm run example:e2e
+```
+
 ## `ui/` — analyze &amp; review console
 
 A tiny web UI for the human-in-the-loop half of the SDK: paste a conversation,
