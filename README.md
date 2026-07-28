@@ -356,6 +356,113 @@ surface as `name_conflict` — which is your signal to `list` and reconcile rath
 
 ---
 
+## Telemetry — `@ratel-ai/cloud-sdk/otel`
+
+Ratel Cloud's usage signals — the ones behind `suggestions.generate` — are fed by OpenTelemetry.
+This package ships that destination as two composable processors on a **subpath**, so the root
+import stays dependency-free for consumers who only manage a catalog:
+
+```sh
+npm install @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-proto
+# plus @opentelemetry/sdk-logs @opentelemetry/api-logs @opentelemetry/exporter-logs-otlp-proto for the Logs half
+```
+
+They are declared as **optional peer dependencies**: a missing one fails at import, not halfway
+through a request.
+
+```ts
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { RatelSpanProcessor } from "@ratel-ai/cloud-sdk/otel";
+
+const sdk = new NodeSDK({
+  spanProcessors: [
+    new RatelSpanProcessor(),    // → Ratel Cloud
+    ...yourExistingProcessors,   // Langfuse, a generic OTLP exporter, … keep working untouched
+  ],
+});
+sdk.start();
+```
+
+**You own the provider.** Ratel ships no bootstrap, registers nothing globally, and installs no
+`ContextManager`; `service.name` and flush/shutdown belong to your host. The processor is thin
+sugar over a standard `BatchSpanProcessor` + OTLP exporter — Cloud defaults plus a filter.
+
+### What gets sent
+
+The default filter forwards only signal-bearing spans: a `ratel.*` span name, or any attribute
+key under `gen_ai.*` / `ratel.*`. Your framework's wrapper noise (`ai.generateText`, HTTP
+auto-instrumentation) is dropped.
+
+**Emission and delivery are separate.** Every span reaches every processor on the provider
+intact; each destination's filter then decides independently. A span Ratel keeps may be dropped
+by your vendor's processor and vice versa — and nothing in the logs will say so. Override per
+instance with `spanFilter` (`() => true` forwards everything):
+
+```ts
+new RatelSpanProcessor({ spanFilter: (span) => span.name.startsWith("ratel.") });
+```
+
+Note the filter keys on span *name* and *attribute keys*, never on the emitting scope: both the
+Ratel SDK and `@ai-sdk/otel` emit an `execute_tool <id>` span, and `gen_ai.*` attributes appear on
+both. Ratel Cloud wants the GenAI signal whoever produced it.
+
+### Endpoint and auth
+
+Routes derive from the same `baseUrl` the management client uses, so one value points both halves
+at one deployment:
+
+| Setting | Resolution order |
+|---|---|
+| Traces URL | `endpoint` → `RATEL_OTLP_ENDPOINT` → `${baseUrl}/traces` (default `https://cloud.ratel.sh/api/v1/traces`) |
+| Logs URL | `logsEndpoint` → the `/logs` sibling derived from the traces URL |
+| Auth | `apiKey` → an `Authorization` header you passed → `RATEL_API_KEY` |
+
+Code-level config always beats ambient environment, and the `RATEL_API_KEY` fallback never
+clobbers an `Authorization` header you set on purpose. Point `RATEL_OTLP_ENDPOINT` at any OTLP
+backend to use these processors without Ratel Cloud at all.
+
+If a custom traces endpoint has no `/traces` segment, the logs route cannot be derived and
+`RatelLogRecordProcessor` throws rather than POSTing logs at the traces route — pass
+`logsEndpoint` explicitly.
+
+### Turning it off
+
+`enabled: false` is a strict no-op: no endpoint or auth resolution, no environment read, no
+exporter, no baggage copying. Leave the wiring in place and flip the flag.
+
+```ts
+new RatelSpanProcessor({ enabled: process.env.NODE_ENV === "production" });
+```
+
+### Experiment arm stamping
+
+Baggage keys under `ratel.experiment.*` are copied onto every span as attributes at `onStart`,
+so experiment arms travel with whatever your framework emits. This requires your host to have a
+`ContextManager` registered for baggage to propagate at all — the processor reads the host's
+context and never registers one of its own.
+
+One deliberate consequence: the attributes are written onto the **shared** span, so every
+processor on the provider sees them, not only Ratel's. That is what makes arm stamping
+framework-agnostic.
+
+### Correlation
+
+Spans join one trace only under an active host span. HTTP auto-instrumentation usually supplies
+that context; jobs, cron entrypoints, and other uninstrumented callers must create it themselves,
+or each span becomes its own root trace.
+
+### Logs
+
+`RatelLogRecordProcessor` is the same shape for the Logs signal, carrying the content-capture
+EventRecords that spans reference. Its default filter forwards `gen_ai.*` / `ratel.*` event names.
+
+```ts
+import { LoggerProvider } from "@opentelemetry/sdk-logs";
+import { RatelLogRecordProcessor } from "@ratel-ai/cloud-sdk/otel";
+
+const logs = new LoggerProvider({ processors: [new RatelLogRecordProcessor()] });
+```
+
 ## Testing with `MockCloud`
 
 Your application's test suite shouldn't need a live API key, network access, or quota.
@@ -419,13 +526,16 @@ no crypto dependency, so the module runs on any runtime.
 
 ## Related packages
 
-This package covers the management side of Ratel Cloud. The runtime side lives elsewhere:
+This package covers the management side of Ratel Cloud, plus the telemetry destination above.
+The catalog runtime lives elsewhere:
 
 - **`@ratel-ai/cloud`** (ratel repo) — the loader that syncs published skills into a running
   agent (replica, refresh, ownership). This SDK deliberately keeps no runtime replica of the
   catalog; agents should sync through the loader. The two share only the API key.
-- **Telemetry client** (ratel repo) — sends LLM-call telemetry, which feeds the usage signals
-  behind `suggestions.generate`.
+- **`@ratel-ai/sdk`** and **`@ratel-ai/vercel-ai-sdk`** (ratel repo) — the *emit* side. They
+  produce the `ratel.*` and `gen_ai.*` spans that `@ratel-ai/cloud-sdk/otel` consumes. Emission
+  needs no Ratel telemetry package at all: the SDK emits standard OTel onto whatever provider you
+  registered, and this package is only one possible destination for it.
 
 ## License
 
