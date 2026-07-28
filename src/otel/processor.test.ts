@@ -1,13 +1,7 @@
 import { context, propagation, ROOT_CONTEXT, trace } from "@opentelemetry/api";
-import { InMemoryLogRecordExporter, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { BasicTracerProvider, InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it, vi } from "vitest";
-import {
-  EXPERIMENT_BAGGAGE_PREFIX,
-  RatelLogRecordProcessor,
-  RatelSpanProcessor,
-  ratelLogExporter,
-} from "./processor.js";
+import { EXPERIMENT_BAGGAGE_PREFIX, RatelSpanProcessor } from "./processor.js";
 
 /**
  * A host-owned provider with the Ratel processor as a tenant — the only wiring the
@@ -161,61 +155,5 @@ describe("RatelSpanProcessor — experiment baggage stamping", () => {
     void new RatelSpanProcessor({ exporter: new InMemorySpanExporter() });
     expect(setGlobal).not.toHaveBeenCalled();
     setGlobal.mockRestore();
-  });
-});
-
-describe("RatelLogRecordProcessor", () => {
-  /** Emit records through a host-owned LoggerProvider with the Ratel processor attached. */
-  async function emitLogs(processor: RatelLogRecordProcessor, eventNames: string[]) {
-    const provider = new LoggerProvider({ processors: [processor] });
-    const logger = provider.getLogger("test");
-    for (const eventName of eventNames) logger.emit({ eventName, body: "x" });
-    // forceFlush only — shutdown() resets InMemoryLogRecordExporter's store, which
-    // would wipe exactly what these tests assert on.
-    await provider.forceFlush();
-  }
-
-  it("forwards gen_ai.* / ratel.* EventRecords and drops the rest", async () => {
-    const exporter = new InMemoryLogRecordExporter();
-    await emitLogs(new RatelLogRecordProcessor({ exporter }), [
-      "ratel.skill.selected",
-      "gen_ai.client.inference.operation.details",
-      "app.user.login",
-    ]);
-    expect(exporter.getFinishedLogRecords().map((r) => r.eventName)).toEqual([
-      "ratel.skill.selected",
-      "gen_ai.client.inference.operation.details",
-    ]);
-  });
-
-  it("honours a per-instance filter override", async () => {
-    const exporter = new InMemoryLogRecordExporter();
-    await emitLogs(new RatelLogRecordProcessor({ exporter, logFilter: () => true }), [
-      "app.user.login",
-    ]);
-    expect(exporter.getFinishedLogRecords()).toHaveLength(1);
-  });
-
-  it("is a strict no-op when disabled", async () => {
-    const exporter = new InMemoryLogRecordExporter();
-    const processor = new RatelLogRecordProcessor({ exporter, enabled: false });
-    await emitLogs(processor, ["ratel.skill.selected"]);
-    expect(exporter.getFinishedLogRecords()).toHaveLength(0);
-    await expect(processor.forceFlush()).resolves.toBeUndefined();
-    await expect(processor.shutdown()).resolves.toBeUndefined();
-  });
-
-  it("constructs without resolving endpoint or auth when disabled", () => {
-    expect(() => new RatelLogRecordProcessor({ enabled: false })).not.toThrow();
-  });
-
-  it("refuses to guess a logs route it cannot derive, rather than misrouting silently", () => {
-    expect(() => ratelLogExporter({ endpoint: "https://collector.internal/ingest" })).toThrow(
-      /logsEndpoint/,
-    );
-  });
-
-  it("derives the Cloud logs route by default", () => {
-    expect(() => ratelLogExporter({ apiKey: "rtl_test" })).not.toThrow();
   });
 });

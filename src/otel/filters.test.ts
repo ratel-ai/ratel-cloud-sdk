@@ -1,7 +1,6 @@
-import type { SdkLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it } from "vitest";
-import { ratelEventFilter, ratelSignalFilter } from "./filters.js";
+import { ratelSignalFilter } from "./filters.js";
 
 /** Only the two fields the predicate reads; the rest of ReadableSpan is irrelevant here. */
 function span(name: string, attributes: Record<string, unknown> = {}): ReadableSpan {
@@ -43,19 +42,5 @@ describe("ratelSignalFilter", () => {
 
   it("drops a span with no attributes and a foreign name", () => {
     expect(ratelSignalFilter(span("anonymous"))).toBe(false);
-  });
-});
-
-describe("ratelEventFilter", () => {
-  const record = (eventName?: string) => ({ eventName }) as SdkLogRecord;
-
-  it("keeps gen_ai.* and ratel.* EventRecords", () => {
-    expect(ratelEventFilter(record("gen_ai.client.inference.operation.details"))).toBe(true);
-    expect(ratelEventFilter(record("ratel.skill.selected"))).toBe(true);
-  });
-
-  it("drops foreign and unnamed records", () => {
-    expect(ratelEventFilter(record("app.user.login"))).toBe(false);
-    expect(ratelEventFilter(record(undefined))).toBe(false);
   });
 });

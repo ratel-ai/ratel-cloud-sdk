@@ -1,9 +1,8 @@
 /**
- * The Ratel Cloud destination: two processors you add to a provider you own.
+ * The Ratel Cloud destination: one processor you add to a provider you own.
  *
- * Ratel ships no provider bootstrap. The host always owns the `NodeSDK` /
- * `LoggerProvider` and therefore owns flush and shutdown; these processors are
- * composable tenants on it:
+ * Ratel ships no provider bootstrap. The host always owns the `NodeSDK` and
+ * therefore owns flush and shutdown; this processor is a composable tenant on it:
  *
  * ```ts
  * const sdk = new NodeSDK({
@@ -15,21 +14,19 @@
  * sdk.start();
  * ```
  *
- * Each is thin sugar over a standard `BatchSpanProcessor` + OTLP exporter: Cloud
+ * It is thin sugar over a standard `BatchSpanProcessor` + OTLP exporter: Cloud
  * defaults for endpoint and auth, plus a signal filter so Ratel ingests only the
  * `gen_ai.*` / `ratel.*` stream rather than everything the host's provider sees.
+ *
+ * Traces are the whole surface. Content capture rides the same signal — Cloud reads
+ * the `gen_ai.client.inference.operation.details` EventRecord as a span event on the
+ * anchor span — so forwarding spans forwards captured content with them. There is no
+ * separate Logs processor because Cloud consumes no Logs signal.
  */
 
 import type { Context } from "@opentelemetry/api";
 import { propagation } from "@opentelemetry/api";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import {
-  BatchLogRecordProcessor,
-  type LogRecordExporter,
-  type LogRecordProcessor,
-  type SdkLogRecord,
-} from "@opentelemetry/sdk-logs";
 import {
   BatchSpanProcessor,
   type ReadableSpan,
@@ -38,7 +35,7 @@ import {
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { type RatelOtlpOptions, resolveOtlpConfig } from "./config.js";
-import { type LogFilter, ratelEventFilter, ratelSignalFilter, type SpanFilter } from "./filters.js";
+import { ratelSignalFilter, type SpanFilter } from "./filters.js";
 
 /**
  * Baggage keys under this prefix are copied onto every span as attributes at
@@ -107,46 +104,6 @@ export class RatelSpanProcessor implements SpanProcessor {
   }
 }
 
-/** Options for {@link RatelLogRecordProcessor}. */
-export interface RatelLogRecordProcessorOptions extends RatelOtlpOptions {
-  /** Set `false` for a strict no-op — see {@link RatelSpanProcessorOptions.enabled}. */
-  enabled?: boolean;
-  /** Override {@link ratelEventFilter}; `() => true` forwards every record. */
-  logFilter?: LogFilter;
-  /** Replace the default OTLP exporter; bypasses endpoint/auth resolution. */
-  exporter?: LogRecordExporter;
-}
-
-/**
- * A filtered `BatchLogRecordProcessor` over the Ratel Cloud OTLP logs exporter.
- * The Logs half carries the content-capture EventRecords that spans reference.
- */
-export class RatelLogRecordProcessor implements LogRecordProcessor {
-  private readonly inner: LogRecordProcessor | undefined;
-  private readonly logFilter: LogFilter;
-
-  constructor(options: RatelLogRecordProcessorOptions = {}) {
-    const { enabled = true, logFilter = ratelEventFilter, exporter, ...otlp } = options;
-    this.logFilter = logFilter;
-    this.inner = enabled
-      ? new BatchLogRecordProcessor({ exporter: exporter ?? logExporter(otlp) })
-      : undefined;
-  }
-
-  onEmit(record: SdkLogRecord, context?: Context): void {
-    if (!this.inner) return;
-    if (this.logFilter(record)) this.inner.onEmit(record, context);
-  }
-
-  forceFlush(): Promise<void> {
-    return this.inner?.forceFlush() ?? Promise.resolve();
-  }
-
-  shutdown(): Promise<void> {
-    return this.inner?.shutdown() ?? Promise.resolve();
-  }
-}
-
 /**
  * Build the OTLP `http/protobuf` trace exporter at the resolved Ratel Cloud route.
  * Exposed for callers batching it themselves; {@link RatelSpanProcessor} wraps it.
@@ -155,25 +112,9 @@ export function ratelTraceExporter(options: RatelOtlpOptions = {}): OTLPTraceExp
   return traceExporter(options);
 }
 
-/** Build the OTLP `http/protobuf` logs exporter at the resolved Ratel Cloud logs route. */
-export function ratelLogExporter(options: RatelOtlpOptions = {}): OTLPLogExporter {
-  return logExporter(options);
-}
-
 function traceExporter(options: RatelOtlpOptions): OTLPTraceExporter {
   const { url, headers } = resolveOtlpConfig(options);
   return new OTLPTraceExporter({ url, headers });
-}
-
-function logExporter(options: RatelOtlpOptions): OTLPLogExporter {
-  const { logsUrl, headers } = resolveOtlpConfig(options);
-  if (!logsUrl) {
-    throw new Error(
-      "ratel telemetry: could not derive a logs route from the configured traces endpoint. " +
-        "Pass { logsEndpoint } explicitly — exporting logs at the traces route would fail silently.",
-    );
-  }
-  return new OTLPLogExporter({ url: logsUrl, headers });
 }
 
 /**

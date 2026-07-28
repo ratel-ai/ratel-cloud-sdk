@@ -78,31 +78,13 @@ describe("resolveOtlpConfig — auth precedence", () => {
   });
 });
 
-describe("resolveOtlpConfig — logs route", () => {
-  it("derives the logs sibling of the default Cloud route", () => {
-    expect(resolveOtlpConfig({}, NO_ENV).logsUrl).toBe("https://cloud.ratel.sh/api/v1/logs");
-  });
-
-  it("derives the logs sibling of a bare /v1/traces endpoint", () => {
-    const resolved = resolveOtlpConfig({ endpoint: "https://collector/v1/traces" }, NO_ENV);
-    expect(resolved.logsUrl).toBe("https://collector/v1/logs");
-  });
-
-  it("preserves the query string when deriving", () => {
-    const resolved = resolveOtlpConfig(
-      { endpoint: "https://collector/v1/traces?tenant=a" },
-      NO_ENV,
-    );
-    expect(resolved.logsUrl).toBe("https://collector/v1/logs?tenant=a");
-  });
-
-  it("prefers an explicit logsEndpoint", () => {
-    const resolved = resolveOtlpConfig({ logsEndpoint: "https://logs.internal/ingest" }, NO_ENV);
-    expect(resolved.logsUrl).toBe("https://logs.internal/ingest");
-  });
-
-  it("reports an underivable logs route as undefined rather than reusing the traces route", () => {
-    const resolved = resolveOtlpConfig({ endpoint: "https://collector/ingest" }, NO_ENV);
-    expect(resolved.logsUrl).toBeUndefined();
+describe("resolveOtlpConfig — resolved shape", () => {
+  it("resolves a traces route and headers, and nothing else", () => {
+    // Traces are the entire destination: Cloud reads content capture as span
+    // events on the same signal, so there is no second route to resolve.
+    expect(Object.keys(resolveOtlpConfig({ apiKey: "k" }, NO_ENV)).sort()).toEqual([
+      "headers",
+      "url",
+    ]);
   });
 });

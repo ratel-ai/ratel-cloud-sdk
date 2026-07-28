@@ -25,18 +25,10 @@ export {
   type ResolvedOtlpConfig,
   resolveOtlpConfig,
 } from "./config.js";
-export {
-  type LogFilter,
-  ratelEventFilter,
-  ratelSignalFilter,
-  type SpanFilter,
-} from "./filters.js";
+export { ratelSignalFilter, type SpanFilter } from "./filters.js";
 export {
   EXPERIMENT_BAGGAGE_PREFIX,
-  RatelLogRecordProcessor,
-  type RatelLogRecordProcessorOptions,
   RatelSpanProcessor,
   type RatelSpanProcessorOptions,
-  ratelLogExporter,
   ratelTraceExporter,
 } from "./processor.js";
