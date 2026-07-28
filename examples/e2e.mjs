@@ -173,7 +173,21 @@ try {
     return `created=${report.created.length} updated=${report.updated.length} unchanged=${report.unchanged.length}`;
   });
 
-  const conversation = [{ role: "user", content: "how do I get a refund for my order?" }];
+  // A multi-turn conversation carrying several distinct asks — a refund, a
+  // delivery question, an address change and an invoice request — so the run
+  // exercises intent extraction over more than one turn.
+  const conversation = [
+    { role: "system", content: "You are a support agent for an online store." },
+    { role: "user", content: "how do I get a refund for my order?" },
+    { role: "assistant", content: "I can start that. Which order is it, and what's wrong with it?" },
+    { role: "user", content: "order #48213 — it arrived damaged. do I have to pay to ship it back?" },
+    { role: "assistant", content: "Damaged items ship back free on a prepaid label." },
+    { role: "user", content: "how long does the money take to reach my card once you get it?" },
+    { role: "user", content: "and my second order still says pending after a week — has it actually shipped?" },
+    { role: "assistant", content: "A label was created but the carrier hasn't scanned it yet." },
+    { role: "user", content: "can I change the delivery address before it ships?" },
+    { role: "user", content: "I also need a VAT invoice for both orders for my accounting." },
+  ];
   let analyze1;
   let firstIntentId = null;
   await step("analyze conversation (intents + coverage, no drafting)", async () => {
