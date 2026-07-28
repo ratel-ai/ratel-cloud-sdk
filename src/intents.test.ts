@@ -57,6 +57,22 @@ describe("IntentsClient.analyze", () => {
     expect(second.runId).toBe(first.runId);
     expect(second.intents[0]?.id).toBe(first.intents[0]?.id);
   });
+
+  it("noCache forces a live re-analysis and replaces the stored run", async () => {
+    const mock = new MockCloud({ catalog });
+    const sdk = makeSdk(mock);
+    const input = { messages: [{ role: "user" as const, content: "rotate credentials" }] };
+
+    const first = await sdk.intents.analyze(input);
+    const forced = await sdk.intents.analyze({ ...input, noCache: true });
+    expect(forced.cached).toBe(false);
+    expect(forced.runId).not.toBe(first.runId);
+
+    // A later plain analyze serves the replacement from cache.
+    const third = await sdk.intents.analyze(input);
+    expect(third.cached).toBe(true);
+    expect(third.runId).toBe(forced.runId);
+  });
 });
 
 describe("IntentsClient.list — the recurring-ask ledger", () => {

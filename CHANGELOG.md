@@ -18,6 +18,16 @@ Tracks ratel-cloud #36, which makes the intent flow asynchronous.
 - `suggestions.get(id)` — fetch one proposal by id.
 - Request/response logging — `debug: true` (console) or a custom `logger` sink on the client;
   emits structured `CloudSdkLogEvent`s (never the auth header).
+- `intents.analyze` accepts `noCache: true` (testing/debugging): skips the server's stored-run
+  cache and replaces the stored run with a fresh extraction.
+
+### Changed
+
+- `intents.analyze` never degrades server-side anymore. Previously, if the cloud's extractor was
+  unconfigured or failed, the server silently echoed the conversation's user messages back as
+  intents — and cached that result. Now those conditions throw a `CloudSdkError` with code
+  `"unavailable"` (reason `"extractor_not_configured"` / `"extractor_unavailable"`); retry the
+  call. Runs cached by the old fallback can be healed with a single `noCache: true` analyze.
 
 ## 0.1.0
 

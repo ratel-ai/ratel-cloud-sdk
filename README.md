@@ -200,6 +200,12 @@ against that user's overlaid catalog. Messages are role-tagged (`user | assistan
 tool`); extraction is driven by the user turns, with the rest as context. Analysis needs no model
 key server-side.
 
+Extraction never degrades: if the server's extractor is unconfigured or temporarily down,
+`analyze` throws a `CloudSdkError` with code `"unavailable"` (reason `"extractor_not_configured"`
+or `"extractor_unavailable"`) instead of returning made-up intents — retry later. For
+testing/debugging, pass `noCache: true` to skip the stored-run cache and force a live
+extraction; the fresh result replaces the stored run for that conversation.
+
 #### `intents.list(options?) → ListIntentsResult`
 
 ```ts

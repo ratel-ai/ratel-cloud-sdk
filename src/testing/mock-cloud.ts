@@ -482,9 +482,12 @@ export class MockCloud {
 
     // Content-addressed by conversation + scope + catalog version, like the server:
     // a re-run against the same catalog is a cache hit (and re-uses intent ids).
+    // `noCache: true` skips the read and replaces the stored entry (a fresh run).
     const cacheKey = JSON.stringify([messages, endUserId, hex]);
-    const cachedResult = this.analyzeCache.get(cacheKey);
-    if (cachedResult) return Response.json({ ...cachedResult, cached: true });
+    if (body.noCache !== true) {
+      const cachedResult = this.analyzeCache.get(cacheKey);
+      if (cachedResult) return Response.json({ ...cachedResult, cached: true });
+    }
 
     const texts = [
       ...new Set(messages.filter((m) => m.role === "user").map((m) => m.content.trim())),

@@ -25,7 +25,13 @@ export class IntentsClient {
    * Extract the conversation's intents and score each against the (optionally
    * end-user-scoped) published catalog. Re-analyzing an unchanged conversation
    * against an unchanged catalog is a server-side cache hit (`cached: true`), so
-   * calling after every turn is cheap.
+   * calling after every turn is cheap. Pass `noCache: true` to force a live
+   * extraction (testing/debugging) — it also replaces the stored run.
+   *
+   * Extraction never degrades: if the server's extractor is unconfigured or
+   * unavailable, this throws a `CloudSdkError` with code `"unavailable"`
+   * (reason `"extractor_not_configured"` / `"extractor_unavailable"`) — retry
+   * later rather than treating it as an empty result.
    */
   async analyze(input: AnalyzeInput): Promise<AnalyzeResult> {
     return this.transport.json<AnalyzeResult>("POST", "/intents/analyze", {

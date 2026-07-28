@@ -203,6 +203,11 @@ export interface AnalyzeInput {
   /** Reference a conversation Cloud already ingested instead of (or alongside)
    * inline messages. */
   conversationId?: string;
+  /** Testing/debugging: skip the server's stored-run cache and REPLACE the
+   * stored run for this conversation with the fresh result, guaranteeing a live
+   * extraction. Leave unset in production — re-analyzing unchanged input is
+   * normally a free cache hit. */
+  noCache?: boolean;
 }
 
 /** One extracted intent with its skill-coverage verdict. Its `id` is a stable
