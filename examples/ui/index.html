@@ -386,6 +386,9 @@
             <button class="primary" id="analyze">Analyze conversation</button>
             <code class="call" id="analyzeCall"></code>
           </div>
+          <label class="checkbox" title="Skip the server's stored-run cache and replace the stored run — forces a live extraction">
+            <input type="checkbox" id="noCache" /> skip cache (noCache)
+          </label>
           <span class="hint" id="analyzeMeta"></span>
         </div>
       </section>
@@ -434,12 +437,11 @@
       const PRESETS = {
         "Billing & delivery": [
           { role: "system", content: "You are a support agent for an online electronics store. Be concise." },
-          { role: "user", content: "I was charged twice for order #48213 — there are two identical charges on my card. I want a refund for the duplicate one." },
+          { role: "user", content: "I was charged twice for order #48215 — there are two identical charges on my card. I want a refund for the duplicate one." },
           { role: "assistant", content: "I see two authorizations of $329.00 on the same card for order #48213. The second is a duplicate; I can reverse it." },
           { role: "user", content: "How long until the money is actually back on the card? My statement closes on Friday." },
           { role: "assistant", content: "The reversal is sent today; most issuers post it within 3–5 business days, so it may land after your statement closes and show on the next one." },
           { role: "user", content: "Thanks. Also the shipping status still says 'pending' a week after I ordered — is my package actually moving?" },
-          { role: "tool", content: "{\"order\":\"48213\",\"carrier\":\"UPS\",\"shipping_status\":\"label_created\",\"last_scan\":null}" },
           { role: "assistant", content: "A label was created but the carrier hasn't scanned the parcel yet, so it's still with the warehouse." },
           { role: "user", content: "Can I change the delivery address now, before it actually ships? I'd rather have it sent to my office." },
           { role: "assistant", content: "While the parcel is still with the warehouse the address can usually be edited; once the carrier scans it, it has to be rerouted through them instead." },
@@ -447,7 +449,6 @@
           { role: "user", content: "And I'll need a proper VAT invoice for this order for my company's accounting." },
           { role: "assistant", content: "Invoices are issued once the order ships. I can add your company name and VAT number to the account so it's on the document." },
           { role: "user", content: "The VAT number on my profile is the old one from before we re-registered — how do I update it so past invoices are reissued correctly?" },
-          { role: "tool", content: "{\"account\":\"c_10422\",\"vat_id\":\"IT01234560123\",\"billing_country\":\"IT\",\"invoices_issued\":7}" },
           { role: "user", content: "One more thing: the monitor in the same order arrived with a cracked panel. What's the process for returning a damaged item — do I pay the return shipping?" },
           { role: "assistant", content: "Damaged-on-arrival items ship back on a prepaid label at no cost to you." },
           { role: "user", content: "And can I get a replacement sent out before you receive the broken one back? I need a working screen this week." },
@@ -457,7 +458,6 @@
           { role: "system", content: "You are the assistant for a B2B SaaS analytics product." },
           { role: "user", content: "I can't log in — I keep requesting a password reset but the email never arrives." },
           { role: "assistant", content: "Let me check. Resets go to the address on file; corporate spam filters sometimes hold them." },
-          { role: "tool", content: "{\"user\":\"u_88431\",\"reset_emails_sent\":4,\"last_delivery\":\"deferred\",\"domain_policy\":\"quarantine\"}" },
           { role: "assistant", content: "Four reset emails were sent and all were deferred by your domain's mail policy — they're sitting in quarantine, not lost." },
           { role: "user", content: "Which sender domain should our IT team allowlist so this stops happening for everyone here?" },
           { role: "user", content: "Once I'm back in, how do I set up SSO with Okta so my whole team signs in through it?" },
@@ -483,7 +483,6 @@
           { role: "user", content: "How long do you keep retrying a failed delivery, and can I replay the ones I already dropped on the floor?" },
           { role: "assistant", content: "Failed deliveries retry with backoff for 24 hours, and past events can be replayed from the webhook log." },
           { role: "user", content: "Do I need to rotate my API key, and if I rotate it will existing integrations keep working during the overlap?" },
-          { role: "tool", content: "{\"key_id\":\"rtl_live_2f\",\"created\":\"2026-01-04\",\"last_used\":\"2026-07-23\"}" },
           { role: "assistant", content: "You can create a second live key and keep both valid while you migrate, then revoke the old one." },
           { role: "user", content: "Can I scope the new key to read-only for our reporting job? I don't want that service able to issue charges." },
           { role: "user", content: "What are the rate limits per key, and what header tells me how much budget I have left before I get throttled?" },
@@ -545,7 +544,10 @@
       let analyzeCallNode;
       function drawAnalyzeCall() {
         const who = scope();
-        const next = call(who ? `sdk.intents.analyze({ messages, endUserId: "${who}" })` : "sdk.intents.analyze({ messages })");
+        const parts = ["messages"];
+        if (who) parts.push(`endUserId: "${who}"`);
+        if ($("noCache").checked) parts.push("noCache: true");
+        const next = call(`sdk.intents.analyze({ ${parts.join(", ")} })`);
         analyzeCallNode.replaceWith(next);
         analyzeCallNode = next;
       }
@@ -578,6 +580,7 @@
         const body = { messages };
         const who = scope();
         if (who) body.endUserId = who;
+        if ($("noCache").checked) body.noCache = true;
         return body;
       }
 
@@ -1325,6 +1328,7 @@
         // Committed on Enter or blur — until then the picker still reads global.
         $("scopeCustom").onchange = () => setScope($("scopeCustom").value.trim());
         $("conversation").onchange = syncScopeFromBody;
+        $("noCache").onchange = drawAnalyzeCall;
         drawAnalyzeCall();
 
         try {

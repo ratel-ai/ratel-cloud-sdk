@@ -122,7 +122,11 @@ async function handleApi(req, res, pathname) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const endUserId =
       typeof body.endUserId === "string" && body.endUserId.length > 0 ? body.endUserId : undefined;
-    const result = await sdk.intents.analyze({ messages, ...(endUserId ? { endUserId } : {}) });
+    const result = await sdk.intents.analyze({
+      messages,
+      ...(endUserId ? { endUserId } : {}),
+      ...(body.noCache === true ? { noCache: true } : {}),
+    });
     return sendJson(res, 200, result);
   }
 
