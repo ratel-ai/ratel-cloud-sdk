@@ -49,6 +49,12 @@ if (live) {
     metadata: {},
     body: `## When to use\n${description}\n`,
   });
+  //
+  // The `subjects` layers exist to show what `endUserId` does: they overlay the
+  // global layer by NAME. "refund" under acme-eu shadows the global "refund"
+  // for that user only (same name, different id — the analysis matches the
+  // scoped one), while "warranty" and "residency" have no global counterpart,
+  // so an intent that is a gap for everyone else is covered for that user.
   const mock = new MockCloud({
     catalog: {
       global: [
@@ -57,6 +63,15 @@ if (live) {
         skill("invoice", "Produce a VAT invoice for an order."),
         skill("password", "Walk a user through resetting their password."),
       ],
+      subjects: {
+        "acme-eu": [
+          skill("refund", "EU: reverse the SEPA authorization; funds settle in 3–5 business days."),
+          skill("residency", "Confirm EU-only data residency and send the current SOC 2 report."),
+        ],
+        "acme-us": [
+          skill("warranty", "US: transfer an extended warranty to the device's new owner."),
+        ],
+      },
     },
   });
   sdk = new RatelCloudSdk({ apiKey: "rtl_test_key", debug, fetch: mock.fetch });
@@ -119,16 +134,140 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, await sdk.intents.suggest(id));
   }
 
+  // A suggest job answers `reason: "exists"` when this intent already has a
+  // draft. There's no get-by-intent endpoint, so find it by scanning — proposals
+  // carry the intent they were drafted from.
+  //
+  // Two traps here. `list()` pages (server default 50, max 100), so ask for the
+  // max; and the existing draft need not still be `pending` — one already
+  // approved or rejected also counts as "exists" — so a pending-only search
+  // reports nothing when there is plainly something. Pending first (the
+  // reviewable case), then any status so the answer explains itself.
+  const pending = pathname.match(/^\/api\/intents\/([^/]+)\/suggestion$/);
+  if (method === "GET" && pending) {
+    const [, id] = pending;
+    const findFor = (list) => list.find((s) => s.sourceQueryIntentId === id);
+
+    const { suggestions: pendingOnes } = await sdk.suggestions.list({
+      status: "pending",
+      limit: 100,
+    });
+    let suggestion = findFor(pendingOnes);
+    if (!suggestion) {
+      const { suggestions: recent } = await sdk.suggestions.list({ limit: 100 });
+      suggestion = findFor(recent);
+    }
+    if (!suggestion) {
+      return sendJson(res, 404, {
+        error: "not_found",
+        message: `the drafting job says a proposal exists for intent ${id}, but none of the 100 most recent suggestions is linked to it`,
+      });
+    }
+    return sendJson(res, 200, { suggestion });
+  }
+
   const job = pathname.match(/^\/api\/jobs\/([^/]+)$/);
   if (method === "GET" && job) {
     const [, id] = job;
     return sendJson(res, 200, await sdk.jobs.get(id));
   }
 
+  // The whole proposal ledger in one call, so the page can tell up front which
+  // intents already have a draft instead of offering a button that can't draft.
+  if (method === "GET" && pathname === "/api/suggestions") {
+    return sendJson(res, 200, await sdk.suggestions.list({ limit: 100 }));
+  }
+
   const suggestionById = pathname.match(/^\/api\/suggestions\/([^/]+)$/);
   if (method === "GET" && suggestionById) {
     const [, id] = suggestionById;
     return sendJson(res, 200, { suggestion: await sdk.suggestions.get(id) });
+  }
+
+  // An `edit_skill` proposal carries only a partial patch, so the review modal
+  // needs the target skill to show the full text the patch applies to.
+  const skillById = pathname.match(/^\/api\/skills\/([^/]+)$/);
+  if (method === "GET" && skillById) {
+    const [, id] = skillById;
+    return sendJson(res, 200, { skill: await sdk.skills.get(id) });
+  }
+
+  // A published skill is still editable: `update` applies to any status, and
+  // both calls take the version last read so a stale editor loses the CAS
+  // (`conflict / version_conflict`) instead of overwriting a newer edit.
+  if (method === "PATCH" && skillById) {
+    const [, id] = skillById;
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, { skill: await sdk.skills.update(id, body) });
+  }
+
+  const skillAction = pathname.match(/^\/api\/skills\/([^/]+)\/(archive|publish)$/);
+  if (method === "POST" && skillAction) {
+    const [, id, action] = skillAction;
+    const { expectedVersion } = await readJsonBody(req);
+    const opts = expectedVersion === undefined ? {} : { expectedVersion };
+    const skill =
+      action === "archive" ? await sdk.skills.archive(id, opts) : await sdk.skills.publish(id, opts);
+    return sendJson(res, 200, { skill });
+  }
+
+  // Accept a proposal with the reviewer's edits folded in.
+  //
+  // There is no endpoint that rewrites a suggestion — the drafted patch is
+  // immutable. What makes "edit before accepting" work is that approving is not
+  // the same as publishing: an approved `new_skill` lands as a DRAFT skill, and
+  // an approved `edit_skill` bumps a skill that may itself still be a draft.
+  // So the sequence is approve → read back → PATCH the reviewer's edits under
+  // the version CAS → publish. Nothing is live until that last step.
+  const accept = pathname.match(/^\/api\/suggestions\/([^/]+)\/accept$/);
+  if (method === "POST" && accept) {
+    const [, id] = accept;
+    const { edits = {}, publish = false } = await readJsonBody(req);
+    // Each entry is either a call the page can render as a signature chip
+    // ({ call, result }) or a plain remark about one it didn't make ({ note }).
+    const steps = [];
+
+    const suggestion = await sdk.suggestions.approve(id);
+    steps.push({ call: `sdk.suggestions.approve("${id}")`, result: suggestion.status });
+
+    const skillId = suggestion.createdSkillId ?? suggestion.targetSkillId;
+    if (!skillId) return sendJson(res, 200, { suggestion, skill: null, steps });
+
+    let skill = await sdk.skills.get(skillId);
+    steps.push({ call: `sdk.skills.get("${skillId}")`, result: `v${skill.version} (${skill.status})` });
+
+    // Only send fields the reviewer actually changed, so an untouched review
+    // doesn't burn a version.
+    const changed = {};
+    for (const field of ["name", "description", "body"]) {
+      if (typeof edits[field] === "string" && edits[field] !== skill[field]) {
+        changed[field] = edits[field];
+      }
+    }
+    if (Array.isArray(edits.tags) && JSON.stringify(edits.tags) !== JSON.stringify(skill.tags)) {
+      changed.tags = edits.tags;
+    }
+
+    if (Object.keys(changed).length > 0) {
+      skill = await sdk.skills.update(skillId, { expectedVersion: skill.version, ...changed });
+      const fields = Object.keys(changed).join(", ");
+      steps.push({
+        call: `sdk.skills.update("${skillId}", { ${fields} })`,
+        result: `v${skill.version}`,
+      });
+    } else {
+      steps.push({ note: "no edits — skipped skills.update" });
+    }
+
+    if (publish && skill.status !== "published") {
+      skill = await sdk.skills.publish(skillId, { expectedVersion: skill.version });
+      steps.push({
+        call: `sdk.skills.publish("${skillId}")`,
+        result: `${skill.status} v${skill.version}`,
+      });
+    }
+
+    return sendJson(res, 200, { suggestion, skill, steps });
   }
 
   const review = pathname.match(/^\/api\/suggestions\/([^/]+)\/(approve|reject)$/);
@@ -139,7 +278,7 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { suggestion });
   }
 
-  return sendJson(res, 404, { error: "not_found" });
+  return sendJson(res, 404, { error: "not_found", message: `no route for ${method} ${pathname}` });
 }
 
 /* — server ———————————————————————————————————————————————————————————————— */
