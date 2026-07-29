@@ -203,9 +203,15 @@ export interface AnalyzeInput {
   /** Reference a conversation Cloud already ingested instead of (or alongside)
    * inline messages. */
   conversationId?: string;
+  /** Testing/debugging: skip the server's stored-run cache and REPLACE the
+   * stored run for this conversation with the fresh result, guaranteeing a live
+   * extraction. Leave unset in production — re-analyzing unchanged input is
+   * normally a free cache hit. */
+  noCache?: boolean;
 }
 
-/** One extracted intent with its skill-coverage verdict. */
+/** One extracted intent with its skill-coverage verdict. Its `id` is a stable
+ * `query_intents` id — pass it to {@link IntentsClient.suggest} to draft a skill. */
 export interface ExtractedIntent {
   id: string;
   text: string;
@@ -214,6 +220,9 @@ export interface ExtractedIntent {
   score: number | null;
 }
 
+/** The result of `POST /intents/analyze`. Analysis extracts intents and scores
+ * coverage — it does NOT draft skills. Draft one for an intent via
+ * {@link IntentsClient.suggest}, then poll the returned job. */
 export interface AnalyzeResult {
   runId: string;
   /** True when the conversation was unchanged since the last run and the
@@ -222,6 +231,56 @@ export interface AnalyzeResult {
   /** ETag hex of the catalog the coverage verdicts were computed against. */
   catalogVersion: string | null;
   intents: ExtractedIntent[];
-  /** Suggestions drafted from this run's coverage gaps. */
-  suggestionIds: string[];
+}
+
+/** One recurring ask in the project's intent ledger (`GET /intents`). */
+export interface QueryIntent {
+  id: string;
+  text: string;
+  /** How many times this ask has been seen. */
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+/** The `GET /intents` page. */
+export interface ListIntentsResult {
+  count: number;
+  page: number;
+  pageSize: number;
+  total: number;
+  intents: QueryIntent[];
+}
+
+/* — async jobs (drafting) ——————————————————————————————————————————————————— */
+
+/** Response to `POST /intents/{id}/suggest`: a drafting job to poll. */
+export interface SuggestResult {
+  jobId: string;
+  /** True when an already in-flight job for the same intent was reused. */
+  coalesced?: boolean;
+}
+
+export const JOB_STATUSES = ["queued", "running", "done", "error"] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+/** Why a `suggest_skill` job finished without a suggestion. `not_configured` =
+ * no drafting key on the server; `exists` = a draft for this intent already exists. */
+export type SuggestJobReason = "not_configured" | "exists";
+
+/** The `result` of a completed `suggest_skill` job. */
+export interface SuggestJobResult {
+  suggestionId: string | null;
+  reason?: SuggestJobReason;
+}
+
+/** An async job as `GET /jobs/{id}` serializes it. `result`/`error` populate once
+ * `status` is terminal (`done`/`error`). `result` is typed per `kind`; for
+ * `suggest_skill` it is a {@link SuggestJobResult}. */
+export interface Job<TResult = unknown> {
+  id: string;
+  kind: string;
+  status: JobStatus;
+  result: TResult | null;
+  error: string | null;
 }

@@ -1,0 +1,1345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ratel Cloud SDK — analyze &amp; review</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1e222b;
+        --line: #2a2f3a;
+        --text: #e7e9ee;
+        --muted: #9aa2b1;
+        --accent: #6ea8fe;
+        --green: #3fb950;
+        --green-bg: #12261a;
+        --amber: #d29922;
+        --amber-bg: #2a2113;
+        --red: #f85149;
+        --radius: 10px;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+      header .spacer { flex: 1; }
+      .badge {
+        font: 600 11px/1 var(--mono);
+        padding: 5px 8px;
+        border-radius: 6px;
+        letter-spacing: 0.03em;
+      }
+      .badge.live { background: var(--green-bg); color: var(--green); border: 1px solid #1c5a2e; }
+      .badge.mock { background: var(--amber-bg); color: var(--amber); border: 1px solid #5a4718; }
+      .host { font: 11px/1 var(--mono); color: var(--muted); }
+      main {
+        display: grid;
+        grid-template-columns: minmax(360px, 520px) 1fr;
+        gap: 18px;
+        padding: 18px 20px 60px;
+        max-width: 1220px;
+        margin: 0 auto;
+      }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .card h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin: 0 0 12px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .card h2 .call { margin-left: auto; text-transform: none; letter-spacing: 0; }
+      /* the SDK call behind a control, shown next to it */
+      .call {
+        display: inline-block;
+        font: 11px/1.5 var(--mono);
+        color: var(--muted);
+        background: #0c0e13;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 3px 7px;
+      }
+      .call .fn { color: var(--accent); }
+      .call .arrow { opacity: 0.5; }
+      .presets { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+      .chip {
+        font: 500 12px/1 system-ui, sans-serif;
+        padding: 7px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        cursor: pointer;
+      }
+      .chip:hover { border-color: var(--accent); color: var(--accent); }
+      textarea {
+        width: 100%;
+        background: #0c0e13;
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 12px;
+        font: 12px/1.55 var(--mono);
+        resize: vertical;
+        min-height: 300px;
+        tab-size: 2;
+        white-space: pre;
+        overflow-wrap: normal;
+        overflow-x: auto;
+      }
+      input {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 7px;
+        padding: 7px 9px;
+        font: inherit;
+        width: 100%;
+      }
+      .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+      .row label { color: var(--muted); font-size: 12px; white-space: nowrap; font-family: var(--mono); }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border-radius: 7px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 8px 12px;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.primary {
+        background: var(--accent);
+        color: #081018;
+        border-color: var(--accent);
+        font-weight: 600;
+      }
+      button.approve { border-color: #1c5a2e; color: var(--green); }
+      button.approve:hover:not(:disabled) { background: var(--green-bg); }
+      button.reject { border-color: #5a2020; color: var(--red); }
+      button.reject:hover:not(:disabled) { background: #2a1313; }
+      .toolbar { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-top: 12px; }
+      .toolbar button { width: 100%; padding: 10px 12px; }
+      .toolbar .hint { margin-top: 0; }
+      .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+      .item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 11px 12px;
+        margin-bottom: 9px;
+        background: var(--panel-2);
+      }
+      /* verdict + its evidence, under the intent text it describes */
+      .item .verdict { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+      .item .verdict .meta { margin-top: 0; }
+      .item .text { font-size: 13px; }
+      .tag {
+        font: 600 10px/1 var(--mono);
+        padding: 4px 6px;
+        border-radius: 5px;
+        letter-spacing: 0.03em;
+      }
+      .tag.covered { background: var(--green-bg); color: var(--green); }
+      .tag.gap { background: var(--amber-bg); color: var(--amber); }
+      .tag.type { background: #1a2233; color: var(--accent); }
+      .tag.status { background: #23262e; color: var(--muted); }
+      .meta { color: var(--muted); font: 11px/1.4 var(--mono); margin-top: 4px; word-break: break-all; }
+      .item.covered-i { border-left: 3px solid var(--green); }
+      .item.gap-i { border-left: 3px solid var(--amber); }
+      /* what kind of thing a card is, above its title */
+      .kind {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font: 600 10px/1 var(--mono);
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--muted);
+        opacity: 0.75;
+        margin-bottom: 5px;
+      }
+      .kind.published { color: var(--green); opacity: 1; }
+      .kind.draft { color: var(--amber); opacity: 1; }
+      /* Which catalog layer a skill lives in — global, or one end-user's. The
+         id is opaque, so it keeps its own case rather than the label's caps. */
+      .scope { color: var(--muted); opacity: 0.85; text-transform: none; letter-spacing: 0.02em; }
+      .scope.scoped { color: var(--accent); opacity: 1; }
+      /* the endUserId picker and the layer counts it explains */
+      .scoperow select {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 7px;
+        padding: 7px 9px;
+        font: inherit;
+        flex: 1;
+        min-width: 0;
+      }
+      .scoperow input { flex: 1; width: auto; min-width: 0; }
+      /* the drafted suggestion: one flat card inside its gap intent */
+      .slot { margin-top: 10px; }
+      /* A control and the SDK call it makes, fused into one box: the button
+         flush inside the frame, its signature sharing the same border. */
+      .cta {
+        display: inline-flex;
+        align-items: stretch;
+        max-width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0c0e13;
+        overflow: hidden;
+      }
+      .cta:has(button:hover:not(:disabled)) { border-color: var(--accent); }
+      /* Without their own border these need a fill to still read as buttons —
+         the default surface matches the intent card behind them. */
+      .cta > button { border: 0; border-radius: 0; background: #2b3140; color: var(--text); }
+      .cta > button:hover:not(:disabled) { background: #363d4d; }
+      .cta > button.primary { background: var(--accent); color: #081018; }
+      .cta > button.primary:hover:not(:disabled) { background: #8bbaff; }
+      .cta > button.approve { background: #17351f; color: #56d364; }
+      .cta > button.approve:hover:not(:disabled) { background: #1e4528; }
+      .cta > button.reject { background: #3a1a18; color: #ff8b84; }
+      .cta > button.reject:hover:not(:disabled) { background: #4b211e; }
+      .cta > .call {
+        display: flex;
+        align-items: center;
+        border: 0;
+        border-radius: 0;
+        background: none;
+        padding: 5px 10px;
+      }
+      .cta > * + * { border-left: 1px solid var(--line); }
+      /* stacked variant: full-width control above its signature */
+      .cta.stack { display: flex; flex-direction: column; align-items: stretch; width: 100%; }
+      .cta.stack > * + * { border-left: 0; border-top: 1px solid var(--line); }
+      .sugg {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-left: 2px solid var(--accent);
+        border-radius: 0 8px 8px 0;
+        background: #14171e;
+      }
+      /* green rail: a skill that already exists, vs the accent rail of a proposal */
+      .sugg.matched { border-left-color: var(--green); }
+      .sugg .name { font: 600 12px/1.4 var(--mono); }
+      .sugg .desc { font-size: 13px; color: var(--muted); margin-top: 3px; }
+      .sugg .actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+      .sugg .steps { margin-top: 8px; }
+      .none { color: var(--muted); font-size: 12px; font-style: italic; }
+
+      /* — review modal ——————————————————————————————————————————————————— */
+      .backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(6, 8, 12, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 20;
+      }
+      .modal {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+        width: min(760px, 100%);
+        max-height: min(88vh, 940px);
+        display: flex;
+        flex-direction: column;
+      }
+      .modal .head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+      }
+      .modal .head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+      .modal .head .spacer { flex: 1; }
+      .modal .close {
+        border: none;
+        background: none;
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1;
+        padding: 4px 8px;
+      }
+      .modal .body { overflow-y: auto; padding: 16px; display: grid; gap: 14px; }
+      .modal .foot {
+        border-top: 1px solid var(--line);
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+      }
+      .modal .foot .btnrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; }
+      .modal .foot .chain .call { display: block; border: 0; border-radius: 0; background: none; padding: 6px 12px; }
+      .rationale-box {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-left: 2px solid var(--accent);
+        border-radius: 0 8px 8px 0;
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+      .field { display: grid; gap: 6px; }
+      .field > .lbl {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font: 600 10px/1 var(--mono);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .field textarea { min-height: 0; }
+      /* Skill text is markdown prose, not code — wrap it rather than making the
+         reviewer scroll sideways through a drafted body. */
+      .field textarea.short,
+      .field textarea.tall { white-space: pre-wrap; overflow-wrap: break-word; }
+      .field textarea.short { height: 62px; }
+      .field textarea.tall { height: 260px; }
+      .tag.changed { background: #1a2233; color: var(--accent); text-transform: none; }
+      .checkbox { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+      .checkbox input { width: auto; }
+      .steps { display: grid; gap: 6px; justify-items: start; font: 11px/1.5 var(--mono); color: var(--muted); }
+      .steps .callrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .steps .tick { color: var(--green); }
+      .steps .note-line { padding-left: 17px; }
+      .preview { width: 100%; border-collapse: collapse; font: 11px/1.4 var(--mono); }
+      .preview th, .preview td { text-align: left; padding: 4px 8px 4px 0; color: var(--muted); }
+      .preview td.q { color: var(--text); font-family: inherit; }
+      .flash { margin: 0 20px; max-width: 1220px; }
+      .flash .err {
+        background: #2a1313;
+        border: 1px solid #5a2020;
+        color: #ffb4ae;
+        border-radius: 8px;
+        padding: 9px 12px;
+        font: 12px/1.4 var(--mono);
+      }
+      .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+      .spin { opacity: 0.6; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Ratel Cloud SDK</h1>
+      <span id="mode" class="badge mock">…</span>
+      <span id="host" class="host"></span>
+      <span class="spacer"></span>
+      <span class="host">analyze → draft → edit → publish</span>
+    </header>
+
+    <div class="flash" id="flash"></div>
+
+    <main>
+      <section class="card">
+        <h2>Conversation (JSON)</h2>
+        <div class="presets" id="presets"></div>
+        <textarea id="conversation" spellcheck="false"></textarea>
+        <div class="hint">
+          A JSON array of <code>{ role, content }</code> messages, or an object
+          <code>{ messages, endUserId }</code> — an id in the body selects it below.
+          Roles: user · assistant · system · tool.
+        </div>
+        <div class="row scoperow">
+          <label for="scope">endUserId</label>
+          <select id="scope"></select>
+          <input id="scopeCustom" hidden placeholder="opaque end-user id" spellcheck="false" />
+        </div>
+        <div class="toolbar">
+          <div class="cta stack">
+            <button class="primary" id="analyze">Analyze conversation</button>
+            <code class="call" id="analyzeCall"></code>
+          </div>
+          <label class="checkbox" title="Skip the server's stored-run cache and replace the stored run — forces a live extraction">
+            <input type="checkbox" id="noCache" /> skip cache (noCache)
+          </label>
+          <span class="hint" id="analyzeMeta"></span>
+        </div>
+      </section>
+
+      <section>
+        <div class="card">
+          <h2>Intents &amp; coverage <code class="call" id="intentsCall"></code></h2>
+          <div id="intents"><div class="empty">Run an analysis to see extracted intents. Covered intents show the matched skill; gaps get a “Suggest a skill” button that drafts a proposal. “Review &amp; edit” then opens the full skill, editable before it’s accepted.</div></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="modal"></div>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, props = {}, ...kids) => {
+        const n = Object.assign(document.createElement(tag), props);
+        for (const k of kids) n.append(k);
+        return n;
+      };
+
+      /* — SDK call chips ——————————————————————————————————————————————————————
+       * Every control in this page is one SDK call (or a short chain of them).
+       * `call()` renders that signature next to the control, tinting the method
+       * names, so the page doubles as a map of the surface it drives. */
+      function call(signature) {
+        const node = el("code", { className: "call" });
+        for (const token of signature.split(/(\s→\s)/)) {
+          if (token === " → ") {
+            node.append(el("span", { className: "arrow", textContent: " → " }));
+            continue;
+          }
+          // Tint the identifier immediately preceding a "(" — the method name.
+          let last = 0;
+          for (const m of token.matchAll(/[a-zA-Z_$][\w$]*(?=\()/g)) {
+            node.append(token.slice(last, m.index), el("span", { className: "fn", textContent: m[0] }));
+            last = m.index + m[0].length;
+          }
+          node.append(token.slice(last));
+        }
+        return node;
+      }
+
+      /* — presets: multi-turn conversations, mixed roles ———————————————————— */
+      const PRESETS = {
+        "Billing & delivery": [
+          { role: "system", content: "You are a support agent for an online electronics store. Be concise." },
+          { role: "user", content: "I was charged twice for order #48215 — there are two identical charges on my card. I want a refund for the duplicate one." },
+          { role: "assistant", content: "I see two authorizations of $329.00 on the same card for order #48213. The second is a duplicate; I can reverse it." },
+          { role: "user", content: "How long until the money is actually back on the card? My statement closes on Friday." },
+          { role: "assistant", content: "The reversal is sent today; most issuers post it within 3–5 business days, so it may land after your statement closes and show on the next one." },
+          { role: "user", content: "Thanks. Also the shipping status still says 'pending' a week after I ordered — is my package actually moving?" },
+          { role: "assistant", content: "A label was created but the carrier hasn't scanned the parcel yet, so it's still with the warehouse." },
+          { role: "user", content: "Can I change the delivery address now, before it actually ships? I'd rather have it sent to my office." },
+          { role: "assistant", content: "While the parcel is still with the warehouse the address can usually be edited; once the carrier scans it, it has to be rerouted through them instead." },
+          { role: "user", content: "If it does ship to the old address anyway, can I have it held at a UPS access point instead of left at the door?" },
+          { role: "user", content: "And I'll need a proper VAT invoice for this order for my company's accounting." },
+          { role: "assistant", content: "Invoices are issued once the order ships. I can add your company name and VAT number to the account so it's on the document." },
+          { role: "user", content: "The VAT number on my profile is the old one from before we re-registered — how do I update it so past invoices are reissued correctly?" },
+          { role: "user", content: "One more thing: the monitor in the same order arrived with a cracked panel. What's the process for returning a damaged item — do I pay the return shipping?" },
+          { role: "assistant", content: "Damaged-on-arrival items ship back on a prepaid label at no cost to you." },
+          { role: "user", content: "And can I get a replacement sent out before you receive the broken one back? I need a working screen this week." },
+          { role: "user", content: "Also, is the extended warranty I bought transferable if I sell the laptop to a colleague?" },
+        ],
+        "Account & security": [
+          { role: "system", content: "You are the assistant for a B2B SaaS analytics product." },
+          { role: "user", content: "I can't log in — I keep requesting a password reset but the email never arrives." },
+          { role: "assistant", content: "Let me check. Resets go to the address on file; corporate spam filters sometimes hold them." },
+          { role: "assistant", content: "Four reset emails were sent and all were deferred by your domain's mail policy — they're sitting in quarantine, not lost." },
+          { role: "user", content: "Which sender domain should our IT team allowlist so this stops happening for everyone here?" },
+          { role: "user", content: "Once I'm back in, how do I set up SSO with Okta so my whole team signs in through it?" },
+          { role: "assistant", content: "You'd add us as a SAML app in Okta, then paste the metadata URL into the workspace's authentication settings." },
+          { role: "user", content: "Do users who already have password accounts get migrated automatically, or do they end up with duplicates?" },
+          { role: "assistant", content: "Existing accounts are matched by verified email address, so they're linked rather than duplicated." },
+          { role: "user", content: "And can I enforce 2FA for every member of the workspace, not just admins?" },
+          { role: "assistant", content: "SSO and workspace-wide 2FA enforcement are both on the Enterprise plan." },
+          { role: "user", content: "We're on Business right now. What does upgrading to Enterprise cost for 40 seats, and is it prorated mid-term?" },
+          { role: "user", content: "Can we also do SCIM provisioning so that when someone leaves Okta their access here is revoked the same day?" },
+          { role: "assistant", content: "SCIM deprovisioning is included with Enterprise SSO and runs on the same directory sync." },
+          { role: "user", content: "How do I export an audit log of who accessed which dashboard last month?" },
+          { role: "assistant", content: "Admins can export the access log as CSV from the security settings, filtered by date range." },
+          { role: "user", content: "Is there an API for that? I want to ship it into our SIEM nightly instead of downloading a file." },
+          { role: "user", content: "Last thing — our security review asks where the data is stored. Do you offer EU-only data residency, and can you send a SOC 2 report?" },
+        ],
+        "Developer / API": [
+          { role: "system", content: "You are the developer-support assistant for a payments API." },
+          { role: "user", content: "Your webhooks are failing against my endpoint with a 401 — how am I supposed to verify the signature you send?" },
+          { role: "assistant", content: "Each delivery includes an HMAC signature header computed over the raw body with your signing secret." },
+          { role: "user", content: "Over the raw body? My framework parses JSON before my handler runs, so I only have the re-serialized object. Is that why it never matches?" },
+          { role: "assistant", content: "Yes — re-serializing changes whitespace and key order, so the digest differs. You need the untouched request body." },
+          { role: "user", content: "How long do you keep retrying a failed delivery, and can I replay the ones I already dropped on the floor?" },
+          { role: "assistant", content: "Failed deliveries retry with backoff for 24 hours, and past events can be replayed from the webhook log." },
+          { role: "user", content: "Do I need to rotate my API key, and if I rotate it will existing integrations keep working during the overlap?" },
+          { role: "assistant", content: "You can create a second live key and keep both valid while you migrate, then revoke the old one." },
+          { role: "user", content: "Can I scope the new key to read-only for our reporting job? I don't want that service able to issue charges." },
+          { role: "user", content: "What are the rate limits per key, and what header tells me how much budget I have left before I get throttled?" },
+          { role: "assistant", content: "Live keys are limited per second and per minute; every response carries the remaining quota and a reset timestamp." },
+          { role: "user", content: "When I do get a 429, is the right move to retry on the reset timestamp or exponential backoff with jitter?" },
+          { role: "user", content: "Separate topic: how do I make retried POSTs safe? If my client times out and retries, will I double-charge someone?" },
+          { role: "assistant", content: "Send an idempotency key with the request; a repeat of the same key returns the original result instead of creating a second charge." },
+          { role: "user", content: "How long is an idempotency key remembered, and what happens if I reuse one with a different payload?" },
+          { role: "user", content: "Also I want a refund for last month — the API was returning 500s for most of a day and it broke our sync." },
+          { role: "assistant", content: "I can see the incident on the 12th. Credits for downtime are handled against the SLA on your contract." },
+          { role: "user", content: "Where do I subscribe to status updates so we hear about incidents before our customers do?" },
+          { role: "user", content: "And is there a sandbox environment where I can test failure cases like declines and disputes without touching real money?" },
+        ],
+      };
+
+      function loadPreset(name) {
+        $("conversation").value = JSON.stringify(PRESETS[name], null, 2);
+      }
+
+      /* — scope (endUserId) ————————————————————————————————————————————————
+       * An opaque end-user id. Skills scoped to one overlay the global layer,
+       * matched by NAME, so the same conversation resolves differently per
+       * user: an intent that is a gap for everyone can be covered by that
+       * user's own skill, and a covered one can match a different skill id.
+       * The recurring-ask ledger is keyed on (text, endUserId) as well, so each
+       * user gets their own intent ids — and therefore their own proposals.
+       *
+       * The select is the source of truth. A conversation pasted as
+       * { messages, endUserId } selects its id here rather than quietly
+       * disagreeing with the picker. */
+      const TEST_USERS = ["acme-eu", "acme-us"];
+      const CUSTOM = "__custom__";
+
+      const scope = () => ($("scope").value === CUSTOM ? $("scopeCustom").value.trim() : $("scope").value);
+      const scopeLabel = () => scope() || "project-global";
+
+      function setScope(value) {
+        const sel = $("scope");
+        // Keep "Custom…" last: a typed id becomes a real option once committed.
+        if (value && ![...sel.options].some((o) => o.value === value)) {
+          sel.add(new Option(value, value), sel.options.length - 1);
+        }
+        sel.value = value;
+        $("scopeCustom").hidden = true;
+        onScopeChanged();
+      }
+
+      function onScopeChanged() {
+        drawAnalyzeCall();
+        // Coverage was resolved against the previous layer, so the list on
+        // screen no longer answers the question the picker now asks.
+        const box = $("intents");
+        if (!box.dataset.rendered) return;
+        delete box.dataset.rendered;
+        box.replaceChildren(el("div", { className: "empty", textContent: `Scope is now ${scopeLabel()} — re-run the analysis: coverage resolves against that layer.` }));
+        $("analyzeMeta").textContent = "";
+      }
+
+      let analyzeCallNode;
+      function drawAnalyzeCall() {
+        const who = scope();
+        const parts = ["messages"];
+        if (who) parts.push(`endUserId: "${who}"`);
+        if ($("noCache").checked) parts.push("noCache: true");
+        const next = call(`sdk.intents.analyze({ ${parts.join(", ")} })`);
+        analyzeCallNode.replaceWith(next);
+        analyzeCallNode = next;
+      }
+
+      // A conversation pasted as { messages, endUserId } picks the scope, so the
+      // two never disagree in silence. After that the select wins.
+      function syncScopeFromBody() {
+        let parsed;
+        try {
+          parsed = JSON.parse($("conversation").value);
+        } catch {
+          return;
+        }
+        const id = Array.isArray(parsed) ? undefined : parsed?.endUserId;
+        if (typeof id === "string" && id.trim() && id.trim() !== scope()) setScope(id.trim());
+      }
+
+      /* — conversation body — */
+      function parseBody() {
+        let parsed;
+        try {
+          parsed = JSON.parse($("conversation").value);
+        } catch (e) {
+          throw { error: "invalid_json", message: e.message };
+        }
+        const messages = Array.isArray(parsed) ? parsed : parsed?.messages;
+        if (!Array.isArray(messages) || messages.length === 0) {
+          throw { error: "invalid", message: "expected a non-empty array of messages (or { messages, endUserId })" };
+        }
+        const body = { messages };
+        const who = scope();
+        if (who) body.endUserId = who;
+        if ($("noCache").checked) body.noCache = true;
+        return body;
+      }
+
+      /* — error flash — */
+      function flash(err) {
+        if (!err) return $("flash").replaceChildren();
+        const code = `${err.error ?? "error"}${err.reason ? " / " + err.reason : ""}`;
+        // Don't leave a dangling em dash when the error carries no message.
+        const text = err.message ? `${code} — ${err.message}` : code;
+        $("flash").replaceChildren(el("div", { className: "err", textContent: text }));
+      }
+
+      async function api(method, path, body) {
+        const res = await fetch(path, {
+          method,
+          headers: body ? { "content-type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw json;
+        return json;
+      }
+
+      /* — review modal ————————————————————————————————————————————————————————
+       * The drafted proposal is immutable — there is no "update suggestion"
+       * endpoint. Editing before accepting works because approving is not
+       * publishing: an approved new_skill lands as a DRAFT skill, so the
+       * reviewer's edits go on top of it (skills.update under the version CAS)
+       * and only then does it publish. The server does that sequence in
+       * POST /api/suggestions/:id/accept and reports the calls it made. */
+      function closeModal() {
+        $("modal").replaceChildren();
+        document.onkeydown = null;
+      }
+
+      function field(label, control, changed) {
+        const lbl = el("div", { className: "lbl" }, label);
+        if (changed) lbl.append(el("span", { className: "tag changed", textContent: "proposed change" }));
+        return el("div", { className: "field" }, lbl, control);
+      }
+
+      function previewTable(preview) {
+        const queries = preview?.queries;
+        if (!Array.isArray(queries) || queries.length === 0) return null;
+        const cell = (hit) => {
+          if (!hit || hit.rank === null) return "—";
+          return hit.score === null ? `#${hit.rank}` : `#${hit.rank} (${hit.score.toFixed(2)})`;
+        };
+        const table = el("table", { className: "preview" });
+        table.append(el("tr", {}, el("th", { textContent: "representative query" }), el("th", { textContent: "before" }), el("th", { textContent: "after" })));
+        queries.forEach((q, i) => {
+          table.append(el("tr", {},
+            el("td", { className: "q", textContent: q }),
+            el("td", { textContent: cell(preview.before?.[i]) }),
+            el("td", { textContent: cell(preview.after?.[i]) }),
+          ));
+        });
+        return field("Retrievability preview", table);
+      }
+
+      // Prefill: a new_skill patch is the whole skill. An edit_skill patch is
+      // partial, so the target skill is fetched and the patch merged over it.
+      async function draftedSkill(s) {
+        const patch = s.patch ?? {};
+        if (s.type === "edit_skill" && s.targetSkillId) {
+          const { skill } = await api("GET", `/api/skills/${s.targetSkillId}`);
+          return {
+            base: skill,
+            values: {
+              name: skill.name,
+              description: patch.description ?? skill.description,
+              tags: patch.tags ?? skill.tags ?? [],
+              body: patch.body ?? skill.body,
+            },
+          };
+        }
+        return {
+          base: null,
+          values: {
+            name: patch.name ?? "",
+            description: patch.description ?? "",
+            tags: patch.tags ?? [],
+            body: patch.body ?? "",
+          },
+        };
+      }
+
+      /* The editable skill form, shared by the proposal review and the editor
+       * for a skill that already exists — same four fields either way. */
+      function skillForm(values, marked = () => false) {
+        const name = el("input", { value: values.name ?? "", spellcheck: false });
+        const description = el("textarea", { className: "short", value: values.description ?? "", spellcheck: false });
+        const tags = el("input", { value: (values.tags ?? []).join(", "), spellcheck: false, placeholder: "comma, separated" });
+        const body = el("textarea", { className: "tall", value: values.body ?? "", spellcheck: false });
+        return {
+          nodes: [
+            field("Name", name, marked("name")),
+            field("Description", description, marked("description")),
+            field("Tags", tags, marked("tags")),
+            field("Body", body, marked("body")),
+          ],
+          focus: () => name.focus(),
+          read: () => ({
+            name: name.value.trim(),
+            description: description.value.trim(),
+            tags: tags.value.split(",").map((t) => t.trim()).filter(Boolean),
+            body: body.value,
+          }),
+        };
+      }
+
+      const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+      /** Names what a card is — the page nests skills inside intents. */
+      const kind = (text, variant) => el("div", { className: `kind ${variant ?? ""}`, textContent: text });
+
+      /* A skill's status belongs in that label rather than in a separate badge:
+       * "published skill" is one fact, not a noun plus a tag. The label keeps
+       * the badge's colour so the state still reads at a glance. */
+      const SKILL_KIND = { published: "published skill", draft: "drafted skill", archived: "archived skill" };
+
+      /* Which catalog layer the thing lives in: `null` is project-global,
+       * anything else is one end-user's overlay, where it shadows a global
+       * entry of the same name. A proposal drafted from a scoped intent
+       * inherits the scope, so it carries the label too. */
+      const scopeTag = (endUserId) =>
+        el("span", {
+          className: `scope${endUserId ? " scoped" : ""}`,
+          textContent: endUserId ? `scoped · ${endUserId}` : "global",
+        });
+
+      const skillKind = (skill) => {
+        const node = kind(SKILL_KIND[skill.status] ?? `${skill.status} skill`, skill.status);
+        node.append(scopeTag(skill.endUserId));
+        return node;
+      };
+
+      const proposalKind = (s, text = "proposal") => {
+        const node = kind(text);
+        node.append(scopeTag(s.endUserId));
+        return node;
+      };
+
+      // Mount a modal built from head/body/foot pieces, wired to close on the
+      // backdrop, the × and Escape.
+      function showModal({ heading, headExtras = [], bodyNodes, foot }) {
+        const close = el("button", { className: "close", textContent: "×" });
+        const modal = el("div", { className: "modal" },
+          el("div", { className: "head" },
+            el("h3", { textContent: heading }),
+            ...headExtras,
+            el("span", { className: "spacer", style: "flex:1" }),
+            close,
+          ),
+          el("div", { className: "body" }, ...bodyNodes),
+          foot,
+        );
+        const backdrop = el("div", { className: "backdrop" }, modal);
+        backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+        close.onclick = closeModal;
+        document.onkeydown = (e) => { if (e.key === "Escape") closeModal(); };
+        $("modal").replaceChildren(backdrop);
+      }
+
+      async function openReview(s, slot) {
+        let drafted;
+        try {
+          drafted = await draftedSkill(s);
+        } catch (e) {
+          return flash(e);
+        }
+        const { values } = drafted;
+        const patch = s.patch ?? {};
+        const publish = el("input", { type: "checkbox", checked: true });
+
+        // On an edit_skill only some fields are patched — mark those, so the
+        // reviewer can tell the proposal's text from the skill's existing text.
+        // On a new_skill every field is drafted, so the marks say nothing.
+        const form = skillForm(values, (f) => s.type === "edit_skill" && patch[f] !== undefined);
+        const bodyNodes = [
+          el("div", { className: "rationale-box", textContent: s.rationale || "(no rationale)" }),
+          ...form.nodes,
+        ];
+        const preview = previewTable(s.retrievabilityPreview);
+        if (preview) bodyNodes.push(preview);
+        if (drafted.base) {
+          bodyNodes.push(el("div", { className: "verdict" },
+            el("span", { className: "meta", textContent: `edits ${drafted.base.id} · v${drafted.base.version} · ${drafted.base.status}` }),
+            call(`sdk.skills.get("${drafted.base.id}")`),
+          ));
+        }
+
+        const reject = el("button", { className: "reject", textContent: "Reject" });
+        const cancel = el("button", { textContent: "Cancel" });
+        const accept = el("button", { className: "primary", textContent: "Approve & save" });
+
+        // The chain the accept button runs, kept in sync with the checkbox so
+        // it always reads as the calls that are actually about to happen.
+        const chain = el("div", { className: "chain" });
+        const drawChain = () => {
+          const steps = [
+            "sdk.suggestions.approve(id)",
+            "sdk.skills.update(skillId, edits)",
+            ...(publish.checked ? ["sdk.skills.publish(skillId)"] : []),
+          ];
+          chain.replaceChildren(call(steps.join(" → ")));
+        };
+        publish.onchange = drawChain;
+        drawChain();
+
+        const foot = el("div", { className: "foot" },
+          el("div", { className: "cta stack" },
+            el("div", { className: "btnrow" },
+              reject,
+              el("span", { className: "spacer", style: "flex:1" }),
+              el("label", { className: "checkbox" }, publish, "Publish after applying edits"),
+              cancel,
+              accept,
+            ),
+            chain,
+          ),
+        );
+
+        cancel.onclick = closeModal;
+        const busy = (on) => { reject.disabled = cancel.disabled = accept.disabled = on; };
+
+        accept.onclick = async () => {
+          const edits = form.read();
+          if (!KEBAB.test(edits.name)) {
+            return flash({ error: "invalid", reason: "invalid_name", message: "skill names are kebab-case (e.g. refund-duplicate-charge)" });
+          }
+          busy(true);
+          accept.textContent = "Saving…";
+          try {
+            const result = await api("POST", `/api/suggestions/${s.id}/accept`, { edits, publish: publish.checked });
+            flash(null);
+            closeModal();
+            slot.replaceChildren(outcomeBlock(result));
+          } catch (e) {
+            flash(e);
+            busy(false);
+            accept.textContent = "Approve & save";
+          }
+        };
+
+        reject.onclick = async () => {
+          busy(true);
+          chain.replaceChildren(call("sdk.suggestions.reject(id)"));
+          reject.textContent = "Rejecting…";
+          try {
+            const { suggestion } = await api("POST", `/api/suggestions/${s.id}/reject`);
+            flash(null);
+            closeModal();
+            slot.replaceChildren(outcomeBlock({
+              suggestion,
+              skill: null,
+              steps: [{ call: `sdk.suggestions.reject("${s.id}")`, result: suggestion.status }],
+            }));
+          } catch (e) {
+            flash(e);
+            busy(false);
+            reject.textContent = "Reject";
+          }
+        };
+
+        showModal({
+          heading: "Review drafted skill",
+          headExtras: [
+            el("span", { className: "tag type", textContent: s.type }),
+            el("span", { className: "tag status", textContent: s.signalKind }),
+            el("span", { className: "host", textContent: s.model ?? "" }),
+          ],
+          bodyNodes,
+          foot,
+        });
+        form.focus();
+      }
+
+      /* — renderers ——————————————————————————————————————————————————————————
+       * One card per intent. Covered → matched-skill meta. Gap → a "Suggest a
+       * skill" button that runs the async draft flow (suggest → poll job →
+       * fetch). The draft shows as name + description only; everything else
+       * about it lives in the review modal. The outcome replaces it once
+       * reviewed. */
+      function suggestionBlock(s, slot) {
+        const patch = s.patch ?? {};
+        // An edit_skill patch carries no name — it's an edit to an existing one.
+        const name = patch.name ?? s.targetSkillId ?? "(unnamed)";
+        const open = el("button", { className: "approve", textContent: "Review & edit" });
+        open.onclick = () => openReview(s, slot);
+        return el("div", { className: "sugg" },
+          // "proposal", not "proposed skill" — too close to "drafted skill",
+          // which is a real skill whose status happens to be draft.
+          proposalKind(s),
+          el("div", { className: "name", textContent: name }),
+          el("div", { className: "desc", textContent: patch.description ?? s.rationale ?? "" }),
+          el("div", { className: "actions" },
+            el("div", { className: "cta" }, open, call(`sdk.suggestions.get("${s.id}")`)),
+          ),
+        );
+      }
+
+      /* A step is either a call — rendered as the same signature chip used
+       * beside the controls — or a plain `note` about one that wasn't made.
+       * `performed` ticks the calls this review actually ran, as opposed to
+       * reads done just to explain state that was already there. */
+      function outcomeBlock({ suggestion, skill, steps, performed = true }) {
+        const stepRow = (s) => {
+          if (s.note) return el("div", { className: "note-line", textContent: s.note });
+          const row = el("div", { className: "callrow" });
+          if (performed) row.append(el("span", { className: "tick", textContent: "✓" }));
+          row.append(call(s.result ? `${s.call} → ${s.result}` : s.call));
+          return row;
+        };
+        const block = el("div", { className: "sugg" });
+        if (skill) {
+          block.append(
+            skillKind(skill),
+            el("div", { className: "name", textContent: skill.name }),
+            el("div", { className: "desc", textContent: skill.description }),
+          );
+        } else {
+          // Nothing became a skill — a rejected proposal is all there is.
+          block.append(proposalKind(suggestion, `${suggestion.status} proposal`));
+        }
+        if (steps.length) block.append(el("div", { className: "steps" }, ...steps.map(stepRow)));
+        // A skill reached this way is just as editable as a matched one.
+        if (skill) block.append(skillActions(skill, block));
+        return block;
+      }
+
+      // Poll a job until it's terminal (mock jobs finish immediately; live ones
+      // take a while while the model drafts). 120 × 1 s matches the SDK's
+      // waitFor default budget of 2 minutes.
+      async function pollJob(jobId, { tries = 120, intervalMs = 1000 } = {}) {
+        for (let i = 0; i < tries; i++) {
+          const job = await api("GET", `/api/jobs/${jobId}`);
+          if (job.status === "done" || job.status === "error") return job;
+          await new Promise((r) => setTimeout(r, intervalMs));
+        }
+        throw { error: "timeout", message: "the drafting job did not finish in time" };
+      }
+
+      // The suggest → poll → fetch → review flow, driven by the button.
+      async function draftForIntent(intent, slot, button) {
+        const intentId = intent.id;
+        const label = button.textContent;
+        button.disabled = true;
+        button.classList.add("spin");
+        button.textContent = "Drafting…";
+        try {
+          const { jobId } = await api("POST", `/api/intents/${intentId}/suggest`);
+          const job = await pollJob(jobId);
+          flash(null);
+          if (job.status === "error") {
+            slot.replaceChildren(el("span", { className: "none", textContent: `drafting failed: ${job.error ?? "unknown error"}` }));
+            return;
+          }
+          const result = job.result || {};
+          const note = (text) => slot.replaceChildren(el("span", { className: "none", textContent: text }));
+
+          if (result.suggestionId) {
+            const { suggestion } = await api("GET", `/api/suggestions/${result.suggestionId}`);
+            return slot.replaceChildren(suggestionBlock(suggestion, slot));
+          }
+          if (result.reason === "exists") {
+            // Not a dead end — the earlier draft is what the job is pointing at.
+            // Failing to find it is this intent's problem, not the page's, so it
+            // reports in the card rather than the error banner.
+            let suggestion;
+            try {
+              ({ suggestion } = await api("GET", `/api/intents/${intentId}/suggestion`));
+            } catch (e) {
+              return note(e.message ?? "a draft already exists, but it couldn't be found");
+            }
+            // Only a pending proposal can still be approved or rejected. An
+            // already-reviewed one isn't a dead end though: if it was approved
+            // it names the skill it produced, which is the more useful answer.
+            if (suggestion.status === "pending") {
+              return slot.replaceChildren(suggestionBlock(suggestion, slot));
+            }
+            const skillId = suggestion.createdSkillId ?? suggestion.targetSkillId;
+            // Usually that skill is the one already shown as this intent's
+            // match — the proposal is what produced it. Say so instead of
+            // fetching and rendering the same card a second time.
+            if (skillId && skillId === intent.matchedSkillId) {
+              return note(`this intent's proposal ${suggestion.id} was already ${suggestion.status} — it produced the skill above`);
+            }
+            if (skillId) {
+              try {
+                const { skill } = await api("GET", `/api/skills/${skillId}`);
+                return slot.replaceChildren(outcomeBlock({
+                  suggestion,
+                  skill,
+                  performed: false,
+                  steps: [
+                    { note: `this intent's proposal ${suggestion.id} is already ${suggestion.status}` },
+                    { call: `sdk.skills.get("${skillId}")`, result: `v${skill.version} (${skill.status})` },
+                  ],
+                }));
+              } catch { /* the skill is gone — fall through to the plain note */ }
+            }
+            return note(`a proposal was already drafted for this intent and is ${suggestion.status}`);
+          }
+          note(result.reason === "not_configured"
+            ? "drafting isn't configured on the server (no ANTHROPIC_API_KEY)"
+            : "no suggestion was produced");
+        } catch (e) {
+          flash(e);
+          button.disabled = false;
+          button.classList.remove("spin");
+          button.textContent = label;
+        }
+      }
+
+      /** Cards currently showing a given skill, so an edit can refresh them all. */
+      const matchedHolders = new Map();
+
+      /** The way out of each status. `publish` applies from any of them. */
+      const TRANSITIONS = {
+        draft: { action: "publish", label: "Publish", busy: "Publishing…", cls: "approve", confirm: false },
+        published: { action: "archive", label: "Archive", busy: "Archiving…", cls: "reject", confirm: true },
+        archived: { action: "publish", label: "Restore (publish)", busy: "Restoring…", cls: "approve", confirm: false },
+      };
+
+      /* — the catalog editor ————————————————————————————————————————————————
+       * A published skill isn't frozen: `skills.update` edits any status under
+       * the version CAS, and `skills.archive` retires it. Both take the version
+       * last read, so a stale editor loses to `conflict (version_conflict)`
+       * rather than clobbering someone else's write. */
+      function openSkillEditor(skill, holder) {
+        const form = skillForm(skill);
+        const bodyNodes = [
+          ...form.nodes,
+          el("div", { className: "verdict" },
+            el("span", { className: "meta", textContent: `${skill.id} · v${skill.version} · ${skill.status} · ${skill.endUserId ? `scoped to ${skill.endUserId}` : "project-global"}` }),
+          ),
+        ];
+
+        // Whatever the status, there's a way out of it: a draft goes live, a
+        // published skill retires, and an archived one comes back — `publish`
+        // applies from any status, so nothing is a dead end.
+        const move = TRANSITIONS[skill.status] ?? TRANSITIONS.published;
+        const transition = el("button", { className: move.cls, textContent: move.label });
+        const cancel = el("button", { textContent: "Cancel" });
+        const save = el("button", { className: "primary", textContent: "Save changes" });
+        const chain = el("div", { className: "chain" });
+        const drawChain = (sig) => chain.replaceChildren(call(sig));
+        drawChain(`sdk.skills.update("${skill.id}", { …, expectedVersion: ${skill.version} })`);
+
+        const foot = el("div", { className: "foot" },
+          el("div", { className: "cta stack" },
+            el("div", { className: "btnrow" },
+              transition,
+              el("span", { className: "spacer", style: "flex:1" }),
+              cancel,
+              save,
+            ),
+            chain,
+          ),
+        );
+        cancel.onclick = closeModal;
+        const busy = (on) => { transition.disabled = cancel.disabled = save.disabled = on; };
+
+        // Refresh every card showing this skill, not just the one clicked —
+        // intents often share a match, and a card left on the old version
+        // would lose the CAS on the next edit.
+        const done = (updated, steps) => {
+          flash(null);
+          closeModal();
+          for (const node of matchedHolders.get(skill.id) ?? [holder]) {
+            node.replaceChildren(matchedBlock(updated, steps));
+          }
+        };
+
+        save.onclick = async () => {
+          const edits = form.read();
+          if (!KEBAB.test(edits.name)) {
+            return flash({ error: "invalid", reason: "invalid_name", message: "skill names are kebab-case (e.g. refund-duplicate-charge)" });
+          }
+          const changed = Object.fromEntries(
+            Object.entries(edits).filter(([k, v]) =>
+              k === "tags" ? JSON.stringify(v) !== JSON.stringify(skill.tags) : v !== skill[k]),
+          );
+          if (Object.keys(changed).length === 0) return closeModal();
+          busy(true);
+          save.textContent = "Saving…";
+          try {
+            const { skill: updated } = await api("PATCH", `/api/skills/${skill.id}`, {
+              ...changed,
+              expectedVersion: skill.version,
+            });
+            done(updated, [{
+              call: `sdk.skills.update("${skill.id}", { ${Object.keys(changed).join(", ")} })`,
+              result: `v${updated.version}`,
+            }]);
+          } catch (e) {
+            flash(e);
+            busy(false);
+            save.textContent = "Save changes";
+          }
+        };
+
+        // Only archiving needs arming — it pulls the skill out of the served
+        // catalog. Two-step rather than a native confirm(), which would block
+        // the page. Publishing puts one in, so it goes on the first click.
+        let armed = !move.confirm;
+        transition.onclick = async () => {
+          if (!armed) {
+            armed = true;
+            transition.textContent = `Confirm ${move.action}`;
+            drawChain(`sdk.skills.${move.action}("${skill.id}", { expectedVersion: ${skill.version} })`);
+            return;
+          }
+          busy(true);
+          transition.textContent = move.busy;
+          try {
+            const { skill: updated } = await api("POST", `/api/skills/${skill.id}/${move.action}`, {
+              expectedVersion: skill.version,
+            });
+            done(updated, [{ call: `sdk.skills.${move.action}("${skill.id}")`, result: updated.status }]);
+          } catch (e) {
+            flash(e);
+            busy(false);
+            armed = !move.confirm;
+            transition.textContent = move.label;
+          }
+        };
+
+        showModal({
+          heading: "Edit skill",
+          headExtras: [el("span", { className: "tag status", textContent: skill.status })],
+          bodyNodes,
+          foot,
+        });
+        form.focus();
+      }
+
+      // A covered intent names its skill by id only. Resolve each distinct one
+      // once and show what actually covers the ask, rather than making the
+      // reviewer click to find out.
+      /* Every card showing a real skill gets the same actions, archived
+       * included — archiving is a transition, not a tombstone, and `publish`
+       * is what reverses it. `card` is the element the editor will replace,
+       * resolved at click time once it has been placed in its slot. */
+      function skillActions(skill, card) {
+        const edit = el("button", { textContent: "Edit skill" });
+        edit.onclick = () => openSkillEditor(skill, card.parentElement ?? card);
+        const move = TRANSITIONS[skill.status] ?? TRANSITIONS.published;
+        return el("div", { className: "actions" },
+          el("div", { className: "cta" }, edit, call(`sdk.skills.update("…") · sdk.skills.${move.action}("…")`)),
+        );
+      }
+
+      function matchedBlock(skill, steps) {
+        const block = el("div", { className: "sugg matched" },
+          skillKind(skill),
+          el("div", { className: "name", textContent: skill.name }),
+          el("div", { className: "desc", textContent: skill.description }),
+        );
+        // Where the card came from, or what the last edit did to it.
+        block.append(el("div", { className: "steps" },
+          ...(steps
+            ? steps.map((s) => el("div", { className: "callrow" },
+                el("span", { className: "tick", textContent: "✓" }),
+                call(s.result ? `${s.call} → ${s.result}` : s.call),
+              ))
+            : [el("div", { className: "callrow" }, call(`sdk.skills.get("${skill.id}") → v${skill.version} (${skill.status})`))]),
+        ));
+        block.append(skillActions(skill, block));
+        return block;
+      }
+
+      /* Analysis says nothing about proposals, so a freshly rendered intent
+       * offers "Suggest a skill" even when one was already drafted from it.
+       * One pass over the ledger settles it: a pending draft is shown for
+       * review straight away, and an intent whose match came from its own
+       * approved proposal drops the button — the server would only dedup. */
+      async function hydrateProposals(byIntentId) {
+        let suggestions;
+        try {
+          ({ suggestions } = await api("GET", "/api/suggestions"));
+        } catch {
+          return; // leave the buttons: clicking still resolves it per intent
+        }
+        const byIntent = new Map();
+        for (const s of suggestions) {
+          if (!s.sourceQueryIntentId) continue;
+          const seen = byIntent.get(s.sourceQueryIntentId);
+          // A pending draft outranks an already-reviewed one: it's actionable.
+          if (!seen || (seen.status !== "pending" && s.status === "pending")) {
+            byIntent.set(s.sourceQueryIntentId, s);
+          }
+        }
+        const fetches = new Map(); // skillId -> promise, so a shared skill is fetched once
+        const getSkill = (id) => {
+          if (!fetches.has(id)) fetches.set(id, api("GET", `/api/skills/${id}`).then((r) => r.skill));
+          return fetches.get(id);
+        };
+
+        await Promise.all([...byIntentId].map(async ([intentId, { slot, intent }]) => {
+          const s = byIntent.get(intentId);
+          if (!s) return;
+          if (s.status === "pending") return slot.replaceChildren(suggestionBlock(s, slot));
+
+          const skillId = s.createdSkillId ?? s.targetSkillId;
+          // Nothing was produced (a rejected proposal): keep the button. Whether
+          // a re-draft is allowed is the server's call, and clicking finds out.
+          if (!skillId) return;
+          if (skillId === intent.matchedSkillId) {
+            return slot.replaceChildren(el("span", { className: "none", textContent: `this intent's proposal ${s.id} was already ${s.status} — it produced the skill above` }));
+          }
+          // The proposal produced a skill that isn't covering this intent — a
+          // draft that was never published, or one since archived. Neither is
+          // reachable any other way, so show it here with its actions.
+          try {
+            const skill = await getSkill(skillId);
+            slot.replaceChildren(outcomeBlock({
+              suggestion: s,
+              skill,
+              performed: false,
+              steps: [
+                { note: `this intent's proposal ${s.id} is ${s.status}, and its skill is not in the served catalog` },
+                { call: `sdk.skills.get("${skillId}")`, result: `v${skill.version} (${skill.status})` },
+              ],
+            }));
+          } catch { /* leave the button; clicking still resolves it */ }
+        }));
+      }
+
+      async function hydrateMatched() {
+        await Promise.all([...matchedHolders].map(async ([skillId, holders]) => {
+          let node;
+          try {
+            const { skill } = await api("GET", `/api/skills/${skillId}`);
+            node = () => matchedBlock(skill);
+          } catch (e) {
+            node = () => el("span", { className: "none", textContent: `${skillId} — ${e.message ?? "could not be loaded"}` });
+          }
+          // One node per holder: an element can only live in one place.
+          for (const holder of holders) holder.replaceChildren(node());
+        }));
+      }
+
+      function renderResults(intents) {
+        const box = $("intents");
+        if (!intents.length) return box.replaceChildren(el("div", { className: "empty", textContent: "No intents extracted." }));
+        // Marks the list as belonging to the scope it was analyzed at, so
+        // changing the picker can retire it.
+        box.dataset.rendered = "1";
+        matchedHolders.clear();
+        const byIntentId = new Map();
+        box.replaceChildren(
+          ...intents.map((i) => {
+            const card = el("div", { className: `item ${i.covered ? "covered-i" : "gap-i"}` });
+            // The ask first, then the verdict on it.
+            const verdict = el("div", { className: "verdict" },
+              el("span", { className: `tag ${i.covered ? "covered" : "gap"}`, textContent: i.covered ? "covered" : "gap" }),
+            );
+            card.append(kind("intent"), el("div", { className: "text", textContent: i.text }), verdict);
+            if (i.covered) {
+              const score = i.score === null ? "–" : i.score.toFixed(2);
+              verdict.append(el("span", { className: "meta", textContent: `score=${score}` }));
+              if (i.matchedSkillId) {
+                // Filled in by hydrateMatched once the skill resolves; several
+                // intents often share one skill, so they share one fetch.
+                const holder = el("div", { className: "slot" },
+                  el("span", { className: "none", textContent: `resolving ${i.matchedSkillId}…` }),
+                );
+                if (!matchedHolders.has(i.matchedSkillId)) matchedHolders.set(i.matchedSkillId, []);
+                matchedHolders.get(i.matchedSkillId).push(holder);
+                card.append(holder);
+              }
+            }
+            // Drafting isn't gated on coverage — `intents.suggest` takes any
+            // intent id. A weak match is still a reason to draft something, so
+            // covered intents get the same action, just not as the loud one.
+            const slot = el("div", { className: "slot" });
+            const button = el("button", {
+              className: i.covered ? "" : "approve",
+              textContent: i.covered ? "Suggest a skill anyway" : "Suggest a skill",
+            });
+            button.onclick = () => draftForIntent(i, slot, button);
+            slot.append(el("div", { className: "cta" }, button, call("sdk.intents.suggest(id) → sdk.jobs.get(jobId)")));
+            byIntentId.set(i.id, { slot, intent: i });
+            card.append(slot);
+            return card;
+          }),
+        );
+        // The list is up immediately; matched skills and existing proposals
+        // fill in as they resolve.
+        hydrateMatched().catch(flash);
+        hydrateProposals(byIntentId).catch(flash);
+      }
+
+      /* — actions — */
+      $("analyze").onclick = async () => {
+        const btn = $("analyze");
+        let body;
+        try {
+          body = parseBody();
+        } catch (e) {
+          return flash(e);
+        }
+        btn.disabled = true;
+        btn.textContent = "Analyzing…";
+        try {
+          const result = await api("POST", "/api/analyze", body);
+          flash(null);
+          renderResults(result.intents);
+          const gaps = result.intents.filter((i) => !i.covered).length;
+          // The cache is keyed on the scope too, so switching users is never a hit.
+          $("analyzeMeta").textContent = `scope=${scopeLabel()} · runId=${result.runId} · cached=${result.cached} · catalogVersion=${String(result.catalogVersion).slice(0, 12)}… · ${result.intents.length} intent(s), ${gaps} gap(s)`;
+        } catch (e) {
+          flash(e);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Analyze conversation";
+        }
+      };
+
+      /* — boot — */
+      (async () => {
+        analyzeCallNode = $("analyzeCall");
+        $("intentsCall").replaceWith(call("AnalyzeResult.intents[] + sdk.suggestions.list()"));
+
+        const names = Object.keys(PRESETS);
+        for (const name of names) {
+          const chip = el("button", { className: "chip", textContent: name });
+          chip.onclick = () => loadPreset(name);
+          $("presets").append(chip);
+        }
+        loadPreset(names[0]);
+
+        const sel = $("scope");
+        sel.add(new Option("— project-global —", ""));
+        for (const user of TEST_USERS) sel.add(new Option(user, user));
+        sel.add(new Option("Custom…", CUSTOM));
+        sel.onchange = () => {
+          const custom = sel.value === CUSTOM;
+          $("scopeCustom").hidden = !custom;
+          if (!custom) return onScopeChanged();
+          $("scopeCustom").value = "";
+          $("scopeCustom").focus();
+        };
+        // Committed on Enter or blur — until then the picker still reads global.
+        $("scopeCustom").onchange = () => setScope($("scopeCustom").value.trim());
+        $("conversation").onchange = syncScopeFromBody;
+        $("noCache").onchange = drawAnalyzeCall;
+        drawAnalyzeCall();
+
+        try {
+          const mode = await api("GET", "/api/mode");
+          const badge = $("mode");
+          badge.textContent = mode.live ? "LIVE" : "MOCK";
+          badge.className = `badge ${mode.live ? "live" : "mock"}`;
+          $("host").textContent = mode.baseUrl;
+        } catch { /* leave defaults */ }
+      })();
+    </script>
+  </body>
+</html>

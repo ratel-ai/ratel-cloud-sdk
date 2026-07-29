@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CloudSdkError } from "./errors.js";
-import { Transport } from "./transport.js";
+import { type CloudSdkLogEvent, Transport } from "./transport.js";
 
 function fetchStub(respond: (url: string, init: RequestInit | undefined) => Response): {
   fetch: typeof fetch;
@@ -88,5 +88,41 @@ describe("Transport", () => {
     expect(res.status).toBe(304);
     expect(res.headers.get("etag")).toBe('"e"');
     expect(res.json).toBeNull();
+  });
+
+  it("emits request + response log events (with query in the path) via a custom logger", async () => {
+    const events: CloudSdkLogEvent[] = [];
+    const stub = fetchStub(() => Response.json({ ok: true }));
+    const t = new Transport({ ...OPTS, fetch: stub.fetch, logger: (e) => events.push(e) });
+    await t.json("GET", "/skills", { query: { status: "published" } });
+
+    expect(events.map((e) => e.phase)).toEqual(["request", "response"]);
+    expect(events[0]).toMatchObject({ method: "GET", path: "/skills?status=published" });
+    const response = events[1];
+    expect(response).toMatchObject({ phase: "response", status: 200, body: { ok: true } });
+  });
+
+  it("a throwing logger sink never fails the request", async () => {
+    const stub = fetchStub(() => Response.json({ ok: true }));
+    const t = new Transport({
+      ...OPTS,
+      fetch: stub.fetch,
+      logger: () => {
+        throw new Error("broken sink");
+      },
+    });
+    await expect(t.json("GET", "/skills")).resolves.toEqual({ ok: true });
+  });
+
+  it("emits an error log event when the request never gets a response", async () => {
+    const events: CloudSdkLogEvent[] = [];
+    const impl = (() => Promise.reject(new Error("socket hangup"))) as typeof fetch;
+    const t = new Transport({ ...OPTS, fetch: impl, logger: (e) => events.push(e) });
+    await t.request("GET", "/x").catch(() => {});
+    expect(events.map((e) => e.phase)).toEqual(["request", "error"]);
+    expect(events[1]).toMatchObject({
+      phase: "error",
+      error: expect.stringContaining("socket hangup"),
+    });
   });
 });

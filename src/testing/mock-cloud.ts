@@ -42,6 +42,25 @@ export interface MockCloudOptions {
 
 const PROJECT_ID = "proj_mock";
 
+/** A row in the mock's recurring-ask ledger. */
+interface QueryIntentRow {
+  id: string;
+  text: string;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  endUserId: string | null;
+}
+
+/** A mock async job. Jobs resolve synchronously (status `done` on creation). */
+interface JobRow {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "done" | "error";
+  result: unknown;
+  error: string | null;
+}
+
 export class MockCloud {
   readonly apiKey: string;
   readonly skills = new Map<string, CloudSkill>();
@@ -52,6 +71,10 @@ export class MockCloud {
   private readonly now: () => string;
   private seq = 0;
   private readonly analyzeCache = new Map<string, AnalyzeResult>();
+  /** The distilled recurring-ask ledger (`query_intents`), keyed by id. */
+  private readonly queryIntents = new Map<string, QueryIntentRow>();
+  /** Async jobs, keyed by id. */
+  private readonly jobs = new Map<string, JobRow>();
 
   constructor(options: MockCloudOptions = {}) {
     this.apiKey = options.apiKey ?? "rtl_test_key";
@@ -159,11 +182,17 @@ export class MockCloud {
     if (seg[0] === "skills" && seg.length === 3 && method === "POST")
       return this.transitionSkill(seg[1] as string, seg[2] as string, body);
     if (path === "/suggestions" && method === "GET") return this.listSuggestions(url);
-    if (path === "/suggestions/generate" && method === "POST")
-      return Response.json({ jobId: this.nextId("job"), coalesced: false });
+    if (path === "/suggestions/generate" && method === "POST") return this.generateSuggestions();
+    if (seg[0] === "suggestions" && seg.length === 2 && method === "GET")
+      return this.getSuggestion(seg[1] as string);
     if (seg[0] === "suggestions" && seg.length === 3 && method === "POST")
       return this.reviewSuggestion(seg[1] as string, seg[2] as string);
     if (path === "/intents/analyze" && method === "POST") return this.analyze(body);
+    if (path === "/intents" && method === "GET") return this.listIntents(url);
+    if (seg[0] === "intents" && seg.length === 3 && seg[2] === "suggest" && method === "POST")
+      return this.suggestIntent(seg[1] as string);
+    if (seg[0] === "jobs" && seg.length === 2 && method === "GET")
+      return this.getJob(seg[1] as string);
 
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -336,6 +365,12 @@ export class MockCloud {
 
   /* — suggestions ————————————————————————————————————————————————————————— */
 
+  private getSuggestion(id: string): Response {
+    const suggestion = this.suggestions.get(id);
+    if (!suggestion) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ suggestion });
+  }
+
   private listSuggestions(url: URL): Response {
     const status = url.searchParams.get("status");
     if (status && !SUGGESTION_STATUSES.includes(status as SuggestionStatus)) {
@@ -412,65 +447,173 @@ export class MockCloud {
     return Response.json({ suggestion });
   }
 
-  /* — intent analysis ————————————————————————————————————————————————————— */
+  /* — intent analysis (async: analyze → suggest → poll job) ——————————————— */
 
+  /** Find-or-create a recurring-ask ledger row for `(text, endUserId)`. */
+  private upsertQueryIntent(text: string, endUserId: string | null): QueryIntentRow {
+    for (const qi of this.queryIntents.values()) {
+      if (qi.text === text && qi.endUserId === endUserId) {
+        qi.occurrences += 1;
+        qi.lastSeenAt = this.now();
+        return qi;
+      }
+    }
+    const ts = this.now();
+    const row: QueryIntentRow = {
+      id: this.nextId("qi"),
+      text,
+      occurrences: 1,
+      firstSeenAt: ts,
+      lastSeenAt: ts,
+      endUserId,
+    };
+    this.queryIntents.set(row.id, row);
+    return row;
+  }
+
+  /** Extract intents + score coverage. Does NOT draft (async suggest does). */
   private analyze(body: Record<string, unknown>): Response {
     const messages = (body.messages ?? []) as ConversationMessage[];
     const endUserId = typeof body.endUserId === "string" ? body.endUserId : null;
-    const cacheKey = JSON.stringify([messages, endUserId]);
-    const cachedResult = this.analyzeCache.get(cacheKey);
-    if (cachedResult) return Response.json({ ...cachedResult, cached: true });
 
     const published = resolve(this.publishedCatalog(), endUserId);
     const hex = createHash("sha256").update(canonicalSet(published), "utf8").digest("hex");
 
+    // Content-addressed by conversation + scope + catalog version, like the server:
+    // a re-run against the same catalog is a cache hit (and re-uses intent ids).
+    // `noCache: true` skips the read and replaces the stored entry (a fresh run).
+    const cacheKey = JSON.stringify([messages, endUserId, hex]);
+    if (body.noCache !== true) {
+      const cachedResult = this.analyzeCache.get(cacheKey);
+      if (cachedResult) return Response.json({ ...cachedResult, cached: true });
+    }
+
     const texts = [
       ...new Set(messages.filter((m) => m.role === "user").map((m) => m.content.trim())),
-    ];
-    const intents: ExtractedIntent[] = [];
-    const suggestionIds: string[] = [];
-    for (const text of texts) {
+    ].filter(Boolean);
+    const intents: ExtractedIntent[] = texts.map((text) => {
+      const qi = this.upsertQueryIntent(text, endUserId);
       const lower = text.toLowerCase();
       const match = published.find((sk) =>
         sk.name.split("-").every((token) => lower.includes(token)),
       );
-      const intent: ExtractedIntent = {
-        id: this.nextId("int"),
+      return {
+        id: qi.id,
         text,
         covered: match !== undefined,
         matchedSkillId: match?.id ?? null,
         score: match ? 1 : null,
       };
-      intents.push(intent);
-      if (!match) {
-        const name = slugify(text);
-        const suggestion = this.seedSuggestion({
-          type: "new_skill",
-          signalKind: "coverage_gap",
-          status: "pending",
-          rationale: `Coverage gap: "${text}"`,
-          endUserId,
-          patch: {
-            name,
-            description: text,
-            tags: [],
-            body: `# ${name}\n\n${text}\n`,
-            model: "mock",
-          } satisfies NewSkillPatch as unknown as Record<string, unknown>,
-        });
-        suggestionIds.push(suggestion.id);
-      }
-    }
+    });
 
     const result: AnalyzeResult = {
       runId: this.nextId("run"),
       cached: false,
       catalogVersion: hex,
       intents,
-      suggestionIds,
     };
     this.analyzeCache.set(cacheKey, result);
     return Response.json(result);
+  }
+
+  /** `GET /intents[?page=]` — the recurring-ask ledger, most-frequent first. */
+  private listIntents(url: URL): Response {
+    const pageSize = 50;
+    const page = Math.max(0, Number.parseInt(url.searchParams.get("page") ?? "0", 10) || 0);
+    const all = [...this.queryIntents.values()].sort((a, b) => b.occurrences - a.occurrences);
+    const slice = all.slice(page * pageSize, page * pageSize + pageSize).map((qi) => ({
+      id: qi.id,
+      text: qi.text,
+      occurrences: qi.occurrences,
+      firstSeenAt: qi.firstSeenAt,
+      lastSeenAt: qi.lastSeenAt,
+    }));
+    return Response.json({
+      count: slice.length,
+      page,
+      pageSize,
+      total: all.length,
+      intents: slice,
+    });
+  }
+
+  /** `POST /suggestions/generate` — the mock runs no signal detection, so the
+   * job settles immediately as the server's "fully inert run": zero counts,
+   * `usedLLM: false`. Registered in the jobs map so `GET /jobs/{id}` resolves. */
+  private generateSuggestions(): Response {
+    const job: JobRow = {
+      id: this.nextId("job"),
+      kind: "generate_suggestions",
+      status: "done",
+      result: {
+        coverageGapsFound: 0,
+        surfacedNotInvokedFound: 0,
+        toolErrorsFound: 0,
+        proposalsCreated: 0,
+        proposalsSkipped: 0,
+        proposalsFailed: 0,
+        usedLLM: false,
+      },
+      error: null,
+    };
+    this.jobs.set(job.id, job);
+    return Response.json({ jobId: job.id, coalesced: false });
+  }
+
+  /** `POST /intents/{id}/suggest` — enqueue a drafting job (resolves synchronously
+   * in the mock). Dedups against an existing pending or approved draft for the
+   * same intent. */
+  private suggestIntent(intentId: string): Response {
+    const qi = this.queryIntents.get(intentId);
+    if (!qi) return Response.json({ error: "not_found" }, { status: 404 });
+
+    // Server contract: a pending OR approved suggestion for the intent suppresses
+    // re-drafting; a rejected one does not (the reviewer said no — draft again).
+    const existing = [...this.suggestions.values()].find(
+      (s) =>
+        s.type === "new_skill" &&
+        (s.status === "pending" || s.status === "approved") &&
+        s.sourceQueryIntentId === intentId,
+    );
+    let result: { suggestionId: string | null; reason?: "not_configured" | "exists" };
+    if (existing) {
+      result = { suggestionId: null, reason: "exists" };
+    } else {
+      const name = slugify(qi.text);
+      const suggestion = this.seedSuggestion({
+        type: "new_skill",
+        signalKind: "coverage_gap",
+        status: "pending",
+        rationale: `Recurring ask: "${qi.text}"`,
+        sourceQueryIntentId: intentId,
+        endUserId: qi.endUserId,
+        patch: {
+          name,
+          description: qi.text,
+          tags: [],
+          body: `# ${name}\n\n${qi.text}\n`,
+          model: "mock",
+        } satisfies NewSkillPatch as unknown as Record<string, unknown>,
+      });
+      result = { suggestionId: suggestion.id };
+    }
+
+    const job: JobRow = {
+      id: this.nextId("job"),
+      kind: "suggest_skill",
+      status: "done",
+      result,
+      error: null,
+    };
+    this.jobs.set(job.id, job);
+    return Response.json({ jobId: job.id }, { status: 202 });
+  }
+
+  /** `GET /jobs/{id}` — poll an async job. */
+  private getJob(id: string): Response {
+    const job = this.jobs.get(id);
+    if (!job) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json(job);
   }
 }
 

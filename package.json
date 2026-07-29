@@ -1,6 +1,6 @@
 {
   "name": "@ratel-ai/cloud-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Management & supervised self-improvement client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API, plus the OpenTelemetry destination on /otel. Dependency-free at the root; pure HTTP, no native addon.",
   "type": "module",
   "sideEffects": false,
@@ -59,7 +59,9 @@
     "prepublishOnly": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "example:e2e": "node examples/e2e.mjs",
+    "example:ui": "node examples/ui/server.mjs"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.3.0 <1.10.0",

@@ -1,13 +1,42 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.2.0 (unreleased)
+
+Tracks ratel-cloud #36, which makes the intent flow asynchronous.
+
+### Breaking
+
+- `intents.analyze` no longer drafts skills or returns `suggestionIds` — it extracts intents and
+  scores coverage only. Drafting is now the explicit async sequence
+  `intents.suggest(intentId) → jobs.waitFor(jobId) → suggestions.get(suggestionId)`.
+
+### Added
+
+- `intents.list()` — the recurring-ask ledger (`GET /intents`, paged).
+- `intents.suggest(intentId)` — enqueue a per-intent drafting job (`→ { jobId }`).
+- `jobs.*` — new client: `jobs.get(id)` / `jobs.waitFor(id)` to poll async jobs to completion.
+- `suggestions.get(id)` — fetch one proposal by id.
+- Request/response logging — `debug: true` (console) or a custom `logger` sink on the client;
+  emits structured `CloudSdkLogEvent`s (never the auth header).
+- `intents.analyze` accepts `noCache: true` (testing/debugging): skips the server's stored-run
+  cache and replaces the stored run with a fresh extraction.
+
+### Changed
+
+- `intents.analyze` never degrades server-side anymore. Previously, if the cloud's extractor was
+  unconfigured or failed, the server silently echoed the conversation's user messages back as
+  intents — and cached that result. Now those conditions throw a `CloudSdkError` with code
+  `"unavailable"` (reason `"extractor_not_configured"` / `"extractor_unavailable"`); retry the
+  call. Runs cached by the old fallback can be healed with a single `noCache: true` analyze.
+
+## 0.1.0
 
 Initial release.
 
 - `RatelCloudSdk` — Bearer-authed client over the Ratel Cloud v1 API.
 - `skills.*` — managed-catalog CRUD, publish/archive lifecycle, optional version CAS, bulk
   `import`.
-- `intents.analyze` — conversation → intents → coverage → gap suggestions.
+- `intents.analyze` — conversation → intents → coverage → gap suggestions (drafted inline).
 - `suggestions.*` — list/generate/approve/reject.
 - `@ratel-ai/cloud-sdk/testing` — `MockCloud`, an in-process mock of the v1 surface.
 - `@ratel-ai/cloud-sdk/otel` — the Ratel Cloud telemetry destination (RS-49). `RatelSpanProcessor`

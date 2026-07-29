@@ -26,6 +26,15 @@ const GENERATE_TIMEOUT_MS = 300_000;
 export class SuggestionsClient {
   constructor(private readonly transport: Transport) {}
 
+  /** Fetch one proposal by id (e.g. the `suggestionId` a suggest job produced). */
+  async get(id: string): Promise<CloudSuggestion> {
+    const body = await this.transport.json<{ suggestion: CloudSuggestion }>(
+      "GET",
+      `/suggestions/${id}`,
+    );
+    return body.suggestion;
+  }
+
   async list(options: ListSuggestionsOptions = {}): Promise<ListSuggestionsResult> {
     return this.transport.json<ListSuggestionsResult>("GET", "/suggestions", {
       query: {

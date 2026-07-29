@@ -11,7 +11,7 @@ npm install @ratel-ai/cloud-sdk
 ## Quickstart
 
 ```ts
-import { RatelCloudSdk } from "@ratel-ai/cloud-sdk";
+import { RatelCloudSdk, type SuggestJobResult } from "@ratel-ai/cloud-sdk";
 
 const cloud = new RatelCloudSdk({ apiKey: process.env.RATEL_API_KEY! });
 
@@ -23,13 +23,17 @@ const skill = await cloud.skills.create({
 });
 await cloud.skills.publish(skill.id, { expectedVersion: skill.version });
 
-// — Supervised self-improvement —
+// — Supervised self-improvement (async: analyze → suggest → poll → review) —
 const run = await cloud.intents.analyze({
   messages: [{ role: "user", content: "how do I rotate the database credentials?" }],
   endUserId: "user-123",
 });
-for (const id of run.suggestionIds) {
-  await cloud.suggestions.approve(id); // gap drafts land as draft skills
+for (const intent of run.intents.filter((i) => !i.covered)) {
+  const { jobId } = await cloud.intents.suggest(intent.id); // draft a skill (async)
+  const job = await cloud.jobs.waitFor<SuggestJobResult>(jobId); // poll until it's done
+  if (job.result?.suggestionId) {
+    await cloud.suggestions.approve(job.result.suggestionId); // lands as a draft skill
+  }
 }
 ```
 
@@ -41,11 +45,18 @@ const cloud = new RatelCloudSdk({
   baseUrl: "https://cloud.ratel.sh/api/v1",     // default; include the /api/v1 prefix
   timeoutMs: 30_000,                            // default per-request timeout
   fetch: customFetch,                           // injectable (testing, proxies, instrumentation)
+  debug: true,                                  // log each request + response to the console
 });
 ```
 
-Long-running calls — `intents.analyze` and `suggestions.generate` — override `timeoutMs` with a
-5-minute budget of their own; everything else uses yours.
+Set `debug: true` to log every call — `→ GET /skills?status=published` on the way out, `← 200 …`
+with the parsed response body on the way back (the auth header is never logged). For structured
+logging, pass a `logger: (event: CloudSdkLogEvent) => void` sink instead (it takes precedence over
+`debug`); each event is a `request`, `response` (with `status`, `durationMs`, `body`), or `error`.
+
+Some calls override `timeoutMs` with a budget of their own — `suggestions.generate` (5 min) and
+`intents.analyze` (2 min); everything else uses yours. Drafting itself is an async job you poll
+(`jobs.waitFor`), so no single request blocks on the model.
 
 The transport does **no retries**: mutations are not idempotent, and reads are cheap to re-issue
 at your discretion. A request that never gets a response (DNS failure, abort, timeout) throws a
@@ -152,6 +163,10 @@ you the management rows; the loader serves the consumer view.
 
 ### `cloud.intents` — conversation analysis
 
+The intent flow is **asynchronous**: `analyze` extracts intents and scores coverage but does
+**not** draft skills. To draft one, call `intents.suggest(intentId)` — it enqueues a job you poll
+with `cloud.jobs` — then fetch the drafted proposal with `suggestions.get`.
+
 #### `intents.analyze(input) → AnalyzeResult`
 
 ```ts
@@ -160,32 +175,81 @@ const run = await cloud.intents.analyze({
     { role: "user", content: "how do I rotate the database credentials?" },
     { role: "assistant", content: "You can use the rotation runbook…" },
   ],
-  endUserId: "user-123",         // optional — scope coverage + drafted skills to this user
+  endUserId: "user-123",         // optional — scope coverage to this user's overlaid catalog
   conversationId: "conv-42",     // optional — reference a conversation Cloud already ingested
 });
 
 run.intents.forEach((i) => {
-  // { id, text, covered, matchedSkillId, score }
+  // { id, text, covered, matchedSkillId, score } — pass `i.id` to intents.suggest()
 });
 ```
 
-Extracts the user's intents, checks each against the published catalog (**coverage**), and
-drafts `new_skill` suggestions for the gaps. The result:
+Extracts the user's intents and checks each against the published catalog (**coverage**). The
+result:
 
 | Field | Meaning |
 |---|---|
 | `runId` | Identifier of this analysis run |
 | `cached` | `true` when the conversation was unchanged since the last run — the previous result is returned |
 | `catalogVersion` | ETag hex of the catalog snapshot the verdicts were computed against |
-| `intents` | Each extracted intent with `covered`, `matchedSkillId`, `score` |
-| `suggestionIds` | Suggestions drafted from this run's coverage gaps — feed them to `suggestions.approve/reject` |
+| `intents` | Each extracted intent: `{ id, text, covered, matchedSkillId, score }`. `id` is a stable `query_intents` id — pass it to `intents.suggest` |
 
 Re-analyzing an unchanged conversation is a server-side cache hit, so **calling `analyze` after
 every turn is cheap** — the intended usage is exactly that, with `endUserId` set so coverage runs
-against that user's overlaid catalog and any drafted skills inherit the scope.
+against that user's overlaid catalog. Messages are role-tagged (`user | assistant | system |
+tool`); extraction is driven by the user turns, with the rest as context. Analysis needs no model
+key server-side.
 
-Note the messages are role-tagged (`user | assistant | system | tool`); intent extraction is
-driven by the user turns, with the rest as context.
+Extraction never degrades: if the server's extractor is unconfigured or temporarily down,
+`analyze` throws a `CloudSdkError` with code `"unavailable"` (reason `"extractor_not_configured"`
+or `"extractor_unavailable"`) instead of returning made-up intents — retry later. For
+testing/debugging, pass `noCache: true` to skip the stored-run cache and force a live
+extraction; the fresh result replaces the stored run for that conversation.
+
+#### `intents.list(options?) → ListIntentsResult`
+
+```ts
+const { intents, total, page, pageSize } = await cloud.intents.list({ page: 0 });
+// intents: [{ id, text, occurrences, firstSeenAt, lastSeenAt }] — most-frequent first
+```
+
+The project's recurring-ask ledger. `page` is zero-based; the server serves 50 per page.
+
+#### `intents.suggest(intentId) → { jobId, coalesced? }`
+
+```ts
+const { jobId } = await cloud.intents.suggest(intent.id);
+```
+
+Enqueues a drafting job for one intent id (from `analyze` or `list`) and returns immediately.
+Poll it with `cloud.jobs` (below). Throws `not_found` if the intent isn't in your project.
+
+### `cloud.jobs` — polling async jobs
+
+#### `jobs.get(id) → Job` · `jobs.waitFor(id, opts?) → Job`
+
+```ts
+const job = await cloud.jobs.waitFor<SuggestJobResult>(jobId); // polls until done/error
+// { id, kind: "suggest_skill", status, result, error }
+if (job.result?.suggestionId) {
+  const suggestion = await cloud.suggestions.get(job.result.suggestionId);
+  await cloud.suggestions.approve(suggestion.id);     // lands as a draft skill
+}
+```
+
+`status` is `queued | running | done | error`. For a `suggest_skill` job, a `done` result is
+`{ suggestionId, reason? }`:
+
+- a non-null `suggestionId` → fetch it with `suggestions.get`;
+- `reason: "not_configured"` → the server has no drafting key (`ANTHROPIC_API_KEY`);
+- `reason: "exists"` → a pending or approved suggestion for this intent already exists
+  (a rejected one doesn't count — the intent can be re-drafted).
+
+`waitFor` polls at `intervalMs` (default 1 s) until the job is terminal or `timeoutMs` (default
+2 min) elapses; it returns the terminal job (it does **not** throw on `status: "error"` — inspect
+`job.error`), throwing only on transport failures or timeout. The timeout throw is a
+`CloudSdkError` with `code: "unavailable"` and `reason: "poll_timeout"`, so it's distinguishable
+from a real 503.
 
 ### `cloud.suggestions` — reviewing machine-drafted proposals
 
@@ -201,6 +265,14 @@ Each suggestion carries `rationale`, `evidence`, and a `retrievabilityPreview` (
 representative queries would rank before vs after applying), so a human can review without
 reconstructing context.
 
+#### `suggestions.get(id) → CloudSuggestion`
+
+```ts
+const suggestion = await cloud.suggestions.get(suggestionId); // e.g. a suggest job's suggestionId
+```
+
+Fetch one proposal by id — typically the `suggestionId` an `intents.suggest` job produced.
+
 #### `suggestions.list(options?) → { count, suggestions }`
 
 ```ts
@@ -215,8 +287,7 @@ Filters: `status` (`pending | approved | rejected | auto_applied | superseded`),
 Triggers a generation run over accumulated signals. It **drains synchronously server-side** — a
 resolved promise means `list()` already sees the results (hence the 5-minute timeout budget).
 `coalesced: true` means an in-flight run absorbed this request; the results are still there when
-it resolves. Analysis runs draft gap suggestions on their own — `generate` is for sweeping the
-other signal kinds on your schedule.
+it resolves. This is the batch sweep over signal kinds; per-intent drafting is `intents.suggest`.
 
 #### `suggestions.approve(id)` / `suggestions.reject(id)`
 
@@ -333,7 +404,8 @@ await cloud.skills.create({
 });
 
 // Agents synced with scope "user-123" get the overlaid view; everyone else is untouched.
-// Analysis with the same id sees the overlaid catalog too, and gap drafts inherit the scope:
+// Analysis with the same id sees the overlaid catalog too, and a skill drafted from one of its
+// intents (intents.suggest) inherits the scope:
 await cloud.intents.analyze({ messages, endUserId: "user-123" });
 ```
 
@@ -494,8 +566,11 @@ What to know when asserting against it:
   `protocol/v1` canonicalization, so loader-side integration tests behave faithfully too.
 - The intent **extraction** is a deterministic fixture, not the server pipeline: one intent per
   unique `user` message, covered iff some published skill's name tokens all appear in the
-  message text; uncovered intents draft `new_skill` suggestions. Don't assert on extraction
-  quality — assert on your handling of the results.
+  message text. Don't assert on extraction quality — assert on your handling of the results.
+- The async flow is faithful but instant: `intents.suggest` creates a job that is already `done`,
+  so `jobs.waitFor` returns on the first poll. It drafts a `new_skill` suggestion (deduped like
+  the server: a second `suggest` for an intent with a pending or approved draft returns
+  `reason: "exists"`; a rejected draft doesn't suppress re-drafting).
 
 ## Protocol conformance
 
