@@ -121,8 +121,8 @@ use `publish`/`archive`. A rename that collides with a non-archived skill is
 #### `skills.publish(id, opts?)` / `skills.archive(id, opts?)`
 
 Lifecycle transitions; `{ expectedVersion }` optionally guards them like an edit (they also bump
-`version`). Publishing stamps `publishedAt` and makes the skill visible to `catalog.pull` and
-the loader. Archiving removes it from the published set and frees its name. An unguarded
+`version`). Publishing stamps `publishedAt` and makes the skill visible to the loader.
+Archiving removes it from the published set and frees its name. An unguarded
 `archive(id)` is the "just remove it" form for cleanup scripts; guard a `publish` when you want
 to be sure nobody edited the body between your review and the call.
 
@@ -146,37 +146,9 @@ const report = await cloud.skills.import(
 - Imported updates bump versions like any other edit; concurrent editors will see
   `version_conflict` on their next stale write, as expected.
 
-### `cloud.catalog` — read-only published pull
-
-```ts
-const pulled = await cloud.catalog.pull({ scope: "user-123" });
-if (!pulled.notModified) {
-  console.log(pulled.catalogVersion, pulled.skills.length);
-}
-```
-
-`pull` returns the **published** set for a scope as the frozen `protocol/v1` wire shape. It is
-meant for tooling and CI diffing — agents should sync through the `@ratel-ai/cloud` loader
-instead, which owns refresh and staleness.
-
-- `scope` absent ⇒ the global layer. A named scope ⇒ that subject's layer **overlaid** on the
-  global layer, the subject winning on `name` collisions. An unknown scope is not an error — it
-  resolves to the global layer.
-- `etag` enables cheap revalidation. The result is a discriminated union — check `notModified`:
-
-```ts
-let etag: string | undefined;
-const res = await cloud.catalog.pull({ etag });
-if (res.notModified) {
-  // 304 — nothing changed since `etag`; res.etag echoes the current tag
-} else {
-  etag = res.etag ?? undefined;       // store for the next pull
-  use(res.skills, res.catalogVersion);
-}
-```
-
-`catalogVersion` is the SHA-256 hex of the canonical set bytes — the same value `analyze` reports
-as the snapshot its coverage verdicts were computed against, so you can correlate the two.
+Reading the *resolved published* catalog — the overlaid, published-only view an agent receives —
+is deliberately not part of this client: that's the ratel SDK cloud loader's job. `list` gives
+you the management rows; the loader serves the consumer view.
 
 ### `cloud.intents` — conversation analysis
 
@@ -345,16 +317,6 @@ for (const s of pending.suggestions) {
 }
 ```
 
-### Detecting catalog drift in CI
-
-`catalog.pull` + the ETag makes "did the published catalog change?" a one-request check:
-
-```ts
-const res = await cloud.catalog.pull({ etag: previouslyStoredEtag });
-if (res.notModified) process.exit(0);            // nothing changed
-diffAgainstRepo(res.skills);                     // …otherwise inspect res.catalogVersion / skills
-```
-
 ### Per-end-user personalization, end to end
 
 `endUserId` is an opaque id (same id space as telemetry). Skills scoped to it overlay the global
@@ -370,10 +332,8 @@ await cloud.skills.create({
   status: "published",
 });
 
-const theirs = await cloud.catalog.pull({ scope: "user-123" }); // overlaid view
-const global = await cloud.catalog.pull({});                    // untouched
-
-// Analysis with the same id sees the overlaid catalog, and gap drafts inherit the scope:
+// Agents synced with scope "user-123" get the overlaid view; everyone else is untouched.
+// Analysis with the same id sees the overlaid catalog too, and gap drafts inherit the scope:
 await cloud.intents.analyze({ messages, endUserId: "user-123" });
 ```
 
@@ -381,7 +341,7 @@ await cloud.intents.analyze({ messages, endUserId: "user-123" });
 
 - Uniqueness is enforced only among **non-archived** skills: archive `foo`, and a new `foo` can
   be created. The archived row keeps its id and history.
-- `skills.import` never deletes: removing a skill from your source folder does *not* archive it
+- `skills.import` never deletes: removing a skill from your source data does *not* archive it
   in cloud on the next import. Archive explicitly.
 - `edit_skill` suggestions never propose renames; renames are always a deliberate
   `skills.update`.
@@ -389,12 +349,113 @@ await cloud.intents.analyze({ messages, endUserId: "user-123" });
 ### Timeouts, aborts, and re-issue policy
 
 All failures-to-respond surface as `code: "network_error"` with `status: null` — including the
-client-side timeout. There is **no built-in retry**. Reads (`list`, `get`, `pull`, `list`
-suggestions) are always safe to re-issue. For mutations, prefer re-reading state over blind
+client-side timeout. There is **no built-in retry**. Reads (`list`, `get`, and suggestion
+lists) are always safe to re-issue. For mutations, prefer re-reading state over blind
 retries: a timed-out `create` may still have committed server-side, and re-issuing it will
 surface as `name_conflict` — which is your signal to `list` and reconcile rather than a bug.
 
 ---
+
+## Telemetry — `@ratel-ai/cloud-sdk/otel`
+
+Ratel Cloud's usage signals — the ones behind `suggestions.generate` — are fed by OpenTelemetry.
+This package ships that destination as one composable span processor on a **subpath**, so the root
+import stays dependency-free for consumers who only manage a catalog:
+
+```sh
+npm install @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-proto
+```
+
+They are declared as **optional peer dependencies**: a missing one fails at import, not halfway
+through a request.
+
+```ts
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { RatelSpanProcessor } from "@ratel-ai/cloud-sdk/otel";
+
+const sdk = new NodeSDK({
+  spanProcessors: [
+    new RatelSpanProcessor(),    // → Ratel Cloud
+    ...yourExistingProcessors,   // Langfuse, a generic OTLP exporter, … keep working untouched
+  ],
+});
+sdk.start();
+```
+
+**You own the provider.** Ratel ships no bootstrap, registers nothing globally, and installs no
+`ContextManager`; `service.name` and flush/shutdown belong to your host. The processor is thin
+sugar over a standard `BatchSpanProcessor` + OTLP exporter — Cloud defaults plus a filter.
+
+### What gets sent
+
+The default filter forwards only signal-bearing spans: a `ratel.*` span name, or any attribute
+key under `gen_ai.*` / `ratel.*`. Your framework's wrapper noise (`ai.generateText`, HTTP
+auto-instrumentation) is dropped.
+
+**Emission and delivery are separate.** Every span reaches every processor on the provider
+intact; each destination's filter then decides independently. A span Ratel keeps may be dropped
+by your vendor's processor and vice versa — and nothing in the logs will say so. Override per
+instance with `spanFilter` (`() => true` forwards everything):
+
+```ts
+new RatelSpanProcessor({ spanFilter: (span) => span.name.startsWith("ratel.") });
+```
+
+Note the filter keys on span *name* and *attribute keys*, never on the emitting scope: both the
+Ratel SDK and `@ai-sdk/otel` emit an `execute_tool <id>` span, and `gen_ai.*` attributes appear on
+both. Ratel Cloud wants the GenAI signal whoever produced it.
+
+> **Watch your attribute namespaces.** *Any* `ratel.*` attribute key opts a span in — including
+> one you added for your own bookkeeping. Tag incidental attributes outside `ratel.*` (and outside
+> `gen_ai.*`) unless you actually mean to send that span to Cloud.
+
+**Captured content rides along.** When content capture is enabled, the
+`gen_ai.client.inference.operation.details` EventRecord is a span event on the inference span, and
+Cloud reads it from there. Forwarding the span forwards the captured messages with it — there is
+nothing extra to wire up, and no separate Logs processor, because Cloud consumes no OTLP Logs
+signal.
+
+### Endpoint and auth
+
+The route derives from the same `baseUrl` the management client uses, so one value points both
+halves of the SDK at one deployment:
+
+| Setting | Resolution order |
+|---|---|
+| Traces URL | `endpoint` → `RATEL_OTLP_ENDPOINT` → `${baseUrl}/traces` (default `https://cloud.ratel.sh/api/v1/traces`) |
+| Auth | `apiKey` → an `Authorization` header you passed → `RATEL_API_KEY` |
+
+Code-level config always beats ambient environment, and the `RATEL_API_KEY` fallback never
+clobbers an `Authorization` header you set on purpose. Point `RATEL_OTLP_ENDPOINT` at any OTLP
+backend to use this processor without Ratel Cloud at all.
+
+Export is OTLP `http/protobuf`. Cloud accepts both protobuf and JSON, and replies `202 Accepted`.
+
+### Turning it off
+
+`enabled: false` is a strict no-op: no endpoint or auth resolution, no environment read, no
+exporter, no baggage copying. Leave the wiring in place and flip the flag.
+
+```ts
+new RatelSpanProcessor({ enabled: process.env.NODE_ENV === "production" });
+```
+
+### Experiment arm stamping
+
+Baggage keys under `ratel.experiment.*` are copied onto every span as attributes at `onStart`,
+so experiment arms travel with whatever your framework emits. This requires your host to have a
+`ContextManager` registered for baggage to propagate at all — the processor reads the host's
+context and never registers one of its own.
+
+One deliberate consequence: the attributes are written onto the **shared** span, so every
+processor on the provider sees them, not only Ratel's. That is what makes arm stamping
+framework-agnostic.
+
+### Correlation
+
+Spans join one trace only under an active host span. HTTP auto-instrumentation usually supplies
+that context; jobs, cron entrypoints, and other uninstrumented callers must create it themselves,
+or each span becomes its own root trace.
 
 ## Testing with `MockCloud`
 
@@ -429,8 +490,8 @@ What to know when asserting against it:
 
 - Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
   real API.
-- ETags are computed with the real `protocol/v1` canonicalization, so conditional `pull`
-  behaves faithfully.
+- The mock's `GET /catalog` route (the loader's read path) computes ETags with the real
+  `protocol/v1` canonicalization, so loader-side integration tests behave faithfully too.
 - The intent **extraction** is a deterministic fixture, not the server pipeline: one intent per
   unique `user` message, covered iff some published skill's name tokens all appear in the
   message text; uncovered intents draft `new_skill` suggestions. Don't assert on extraction
@@ -459,13 +520,16 @@ no crypto dependency, so the module runs on any runtime.
 
 ## Related packages
 
-This package covers the management side of Ratel Cloud. The runtime side lives elsewhere:
+This package covers the management side of Ratel Cloud, plus the telemetry destination above.
+The catalog runtime lives elsewhere:
 
 - **`@ratel-ai/cloud`** (ratel repo) — the loader that syncs published skills into a running
   agent (replica, refresh, ownership). This SDK deliberately keeps no runtime replica of the
   catalog; agents should sync through the loader. The two share only the API key.
-- **Telemetry client** (ratel repo) — sends LLM-call telemetry, which feeds the usage signals
-  behind `suggestions.generate`.
+- **`@ratel-ai/sdk`** and **`@ratel-ai/vercel-ai-sdk`** (ratel repo) — the *emit* side. They
+  produce the `ratel.*` and `gen_ai.*` spans that `@ratel-ai/cloud-sdk/otel` consumes. Emission
+  needs no Ratel telemetry package at all: the SDK emits standard OTel onto whatever provider you
+  registered, and this package is only one possible destination for it.
 
 ## License
 

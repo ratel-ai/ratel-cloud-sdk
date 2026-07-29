@@ -20,7 +20,8 @@ export interface ListSkillsResult {
 
 /**
  * The managed-catalog write surface (`/skills`, Bearer project key).
- * `MockCloud` serves the same wire contract for tests.
+ * `MockCloud` serves the same wire contract for tests. Reading the resolved
+ * published catalog is the ratel SDK cloud loader's job, not this client's.
  */
 export class SkillsClient {
   constructor(private readonly transport: Transport) {}

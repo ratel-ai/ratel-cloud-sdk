@@ -1,7 +1,7 @@
 {
   "name": "@ratel-ai/cloud-sdk",
   "version": "0.1.0",
-  "description": "Management & supervised self-improvement client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API. Pure HTTP, no native addon.",
+  "description": "Management & supervised self-improvement client for Ratel Cloud — catalog writes, intent analysis, and skill-suggestion review over the cloud API, plus the OpenTelemetry destination on /otel. Dependency-free at the root; pure HTTP, no native addon.",
   "type": "module",
   "sideEffects": false,
   "packageManager": "pnpm@10.28.2",
@@ -15,6 +15,10 @@
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
+    },
+    "./otel": {
+      "types": "./dist/otel/index.d.ts",
+      "default": "./dist/otel/index.js"
     }
   },
   "license": "MIT",
@@ -33,6 +37,9 @@
     "ai-agents",
     "llm",
     "context-engineering",
+    "opentelemetry",
+    "otlp",
+    "telemetry",
     "ratel"
   ],
   "engines": {
@@ -54,8 +61,27 @@
     "lint": "biome check src",
     "test": "vitest run"
   },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.3.0 <1.10.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
+    "@opentelemetry/sdk-trace-base": "^2.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-trace-otlp-proto": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
+    "@opentelemetry/sdk-trace-base": "^2.9.0",
     "@types/node": "^22.10.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.5"
