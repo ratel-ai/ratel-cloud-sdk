@@ -3,10 +3,12 @@
 ## `e2e.mjs` — end-to-end SDK walk
 
 Exercises the client surface — skills lifecycle (create → get → list → update →
-publish), bulk import, conversation analysis (with a cache-hit re-run), and
-suggestion listing — then archives everything it created so a live project is
-left clean. (Reading the published catalog is the ratel cloud loader's job, not
-this client's, so there's no catalog step.)
+publish, including a version-conflict check), bulk import, conversation analysis
+(with a cache-hit re-run), the recurring-ask intent ledger, and the async draft
+flow (suggest → poll the job → fetch + approve the proposal) — then archives
+everything it created so a live project is left clean. (Reading the published
+catalog is the ratel cloud loader's job, not this client's, so there's no
+catalog step.)
 
 **Hybrid target**, chosen by whether `RATEL_API_KEY` is set:
 
@@ -36,7 +38,7 @@ RATEL_DEBUG=1 RATEL_API_KEY=rtl_… pnpm run example:ui   # logs in the server c
 RATEL_DEBUG=1 pnpm run example:e2e
 ```
 
-## `ui/` — analyze &amp; review console
+## `ui/` — analyze & review console
 
 A tiny web UI for the human-in-the-loop half of the SDK: paste a conversation,
 **analyze** it (extracted intents + per-intent coverage verdicts), click
