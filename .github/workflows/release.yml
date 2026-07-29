@@ -2,15 +2,13 @@ name: Release
 
 # Tag-driven npm release, slimmed from the ratel-ai/ratel release pipeline:
 # one pure-TS package, no platform matrix. Publishes via npm Trusted
-# Publishers (OIDC, no token secret), gated by the `release` GitHub
-# environment. workflow_dispatch with dry_run validates the whole pipeline
-# without publishing.
+# Publishers (OIDC, no token secret) with provenance, gated by the `release`
+# GitHub environment. workflow_dispatch with dry_run validates the whole
+# pipeline without publishing.
 #
-# No provenance: npm dropped support for provenance from private source
-# repositories, and this repo is private. When it goes public, add
-# `--provenance` back to the Publish step below — attestations start on the
-# next version published (already-released versions stay unattested, as npm
-# versions are immutable).
+# Provenance requires a public source repository. If this repo ever goes
+# private again, drop `--provenance` from the Publish step or every release
+# will fail.
 
 on:
   push:
@@ -117,7 +115,7 @@ jobs:
           if [ -z "$DRY_RUN" ] && [ "$(npm view "$name@$ver" version 2>/dev/null)" = "$ver" ]; then
             echo "::notice::$name@$ver already published — skipping"
           else
-            npm publish --tag "$DIST_TAG" $DRY_RUN
+            npm publish --provenance --tag "$DIST_TAG" $DRY_RUN
           fi
 
   github-release:
