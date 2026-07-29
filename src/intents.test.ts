@@ -58,6 +58,25 @@ describe("IntentsClient.analyze", () => {
     expect(second.intents[0]?.id).toBe(first.intents[0]?.id);
   });
 
+  it("a catalog change busts the cache for an unchanged conversation", async () => {
+    const mock = new MockCloud({ catalog });
+    const sdk = makeSdk(mock);
+    const input = { messages: [{ role: "user" as const, content: "rotate credentials" }] };
+
+    const first = await sdk.intents.analyze(input);
+    const skill = await sdk.skills.create({
+      name: "rotate-credentials",
+      description: "d",
+      body: "b",
+    });
+    await sdk.skills.publish(skill.id, { expectedVersion: skill.version });
+
+    const fresh = await sdk.intents.analyze(input);
+    expect(fresh.cached).toBe(false);
+    expect(fresh.catalogVersion).not.toBe(first.catalogVersion);
+    expect(fresh.intents[0]?.covered).toBe(true);
+  });
+
   it("noCache forces a live re-analysis and replaces the stored run", async () => {
     const mock = new MockCloud({ catalog });
     const sdk = makeSdk(mock);
