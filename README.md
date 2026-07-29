@@ -247,7 +247,9 @@ if (job.result?.suggestionId) {
 
 `waitFor` polls at `intervalMs` (default 1 s) until the job is terminal or `timeoutMs` (default
 2 min) elapses; it returns the terminal job (it does **not** throw on `status: "error"` — inspect
-`job.error`), throwing only on transport failures or timeout.
+`job.error`), throwing only on transport failures or timeout. The timeout throw is a
+`CloudSdkError` with `code: "unavailable"` and `reason: "poll_timeout"`, so it's distinguishable
+from a real 503.
 
 ### `cloud.suggestions` — reviewing machine-drafted proposals
 

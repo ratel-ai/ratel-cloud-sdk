@@ -44,6 +44,7 @@ export class JobsClient {
         throw new CloudSdkError(`Job ${id} did not finish within ${timeoutMs}ms`, {
           status: null,
           code: "unavailable",
+          reason: "poll_timeout",
         });
       }
       await delay(intervalMs);
