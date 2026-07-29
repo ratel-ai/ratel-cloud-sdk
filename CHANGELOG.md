@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0
 
 Tracks ratel-cloud #36, which makes the intent flow asynchronous.
 
