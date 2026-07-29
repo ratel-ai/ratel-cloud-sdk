@@ -305,7 +305,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+// Loopback only: this process holds the live API key and its endpoints have no
+// auth of their own, so never expose them beyond the machine.
+server.listen(PORT, "127.0.0.1", () => {
   console.log(
     live
       ? `▶ LIVE  proxying ${effectiveBaseUrl}`
