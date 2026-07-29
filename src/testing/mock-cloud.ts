@@ -544,8 +544,13 @@ export class MockCloud {
     const qi = this.queryIntents.get(intentId);
     if (!qi) return Response.json({ error: "not_found" }, { status: 404 });
 
+    // Server contract: a pending OR approved suggestion for the intent suppresses
+    // re-drafting; a rejected one does not (the reviewer said no — draft again).
     const existing = [...this.suggestions.values()].find(
-      (s) => s.type === "new_skill" && s.status === "pending" && s.sourceQueryIntentId === intentId,
+      (s) =>
+        s.type === "new_skill" &&
+        (s.status === "pending" || s.status === "approved") &&
+        s.sourceQueryIntentId === intentId,
     );
     let result: { suggestionId: string | null; reason?: "not_configured" | "exists" };
     if (existing) {

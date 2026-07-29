@@ -144,9 +144,10 @@ async function handleApi(req, res, pathname) {
   //
   // Two traps here. `list()` pages (server default 50, max 100), so ask for the
   // max; and the existing draft need not still be `pending` — one already
-  // approved or rejected also counts as "exists" — so a pending-only search
-  // reports nothing when there is plainly something. Pending first (the
-  // reviewable case), then any status so the answer explains itself.
+  // approved also counts as "exists" (rejected does not; the server lets a
+  // rejected intent be re-drafted) — so a pending-only search reports nothing
+  // when there is plainly something. Pending first (the reviewable case), then
+  // any status so the answer explains itself.
   const pending = pathname.match(/^\/api\/intents\/([^/]+)\/suggestion$/);
   if (method === "GET" && pending) {
     const [, id] = pending;

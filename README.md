@@ -242,7 +242,8 @@ if (job.result?.suggestionId) {
 
 - a non-null `suggestionId` → fetch it with `suggestions.get`;
 - `reason: "not_configured"` → the server has no drafting key (`ANTHROPIC_API_KEY`);
-- `reason: "exists"` → an actionable draft for this intent already exists.
+- `reason: "exists"` → a pending or approved suggestion for this intent already exists
+  (a rejected one doesn't count — the intent can be re-drafted).
 
 `waitFor` polls at `intervalMs` (default 1 s) until the job is terminal or `timeoutMs` (default
 2 min) elapses; it returns the terminal job (it does **not** throw on `status: "error"` — inspect
@@ -464,8 +465,9 @@ What to know when asserting against it:
   unique `user` message, covered iff some published skill's name tokens all appear in the
   message text. Don't assert on extraction quality — assert on your handling of the results.
 - The async flow is faithful but instant: `intents.suggest` creates a job that is already `done`,
-  so `jobs.waitFor` returns on the first poll. It drafts a `new_skill` suggestion (deduped: a
-  second `suggest` for the same intent while a draft is still pending returns `reason: "exists"`).
+  so `jobs.waitFor` returns on the first poll. It drafts a `new_skill` suggestion (deduped like
+  the server: a second `suggest` for an intent with a pending or approved draft returns
+  `reason: "exists"`; a rejected draft doesn't suppress re-drafting).
 
 ## Protocol conformance
 
