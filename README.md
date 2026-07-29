@@ -11,7 +11,7 @@ npm install @ratel-ai/cloud-sdk
 ## Quickstart
 
 ```ts
-import { RatelCloudSdk } from "@ratel-ai/cloud-sdk";
+import { RatelCloudSdk, type SuggestJobResult } from "@ratel-ai/cloud-sdk";
 
 const cloud = new RatelCloudSdk({ apiKey: process.env.RATEL_API_KEY! });
 
@@ -30,7 +30,7 @@ const run = await cloud.intents.analyze({
 });
 for (const intent of run.intents.filter((i) => !i.covered)) {
   const { jobId } = await cloud.intents.suggest(intent.id); // draft a skill (async)
-  const job = await cloud.jobs.waitFor(jobId);              // poll until it's done
+  const job = await cloud.jobs.waitFor<SuggestJobResult>(jobId); // poll until it's done
   if (job.result?.suggestionId) {
     await cloud.suggestions.approve(job.result.suggestionId); // lands as a draft skill
   }
@@ -229,7 +229,7 @@ Poll it with `cloud.jobs` (below). Throws `not_found` if the intent isn't in you
 #### `jobs.get(id) → Job` · `jobs.waitFor(id, opts?) → Job`
 
 ```ts
-const job = await cloud.jobs.waitFor(jobId);          // polls until done/error
+const job = await cloud.jobs.waitFor<SuggestJobResult>(jobId); // polls until done/error
 // { id, kind: "suggest_skill", status, result, error }
 if (job.result?.suggestionId) {
   const suggestion = await cloud.suggestions.get(job.result.suggestionId);
