@@ -182,8 +182,7 @@ export class MockCloud {
     if (seg[0] === "skills" && seg.length === 3 && method === "POST")
       return this.transitionSkill(seg[1] as string, seg[2] as string, body);
     if (path === "/suggestions" && method === "GET") return this.listSuggestions(url);
-    if (path === "/suggestions/generate" && method === "POST")
-      return Response.json({ jobId: this.nextId("job"), coalesced: false });
+    if (path === "/suggestions/generate" && method === "POST") return this.generateSuggestions();
     if (seg[0] === "suggestions" && seg.length === 2 && method === "GET")
       return this.getSuggestion(seg[1] as string);
     if (seg[0] === "suggestions" && seg.length === 3 && method === "POST")
@@ -538,8 +537,32 @@ export class MockCloud {
     });
   }
 
+  /** `POST /suggestions/generate` — the mock runs no signal detection, so the
+   * job settles immediately as the server's "fully inert run": zero counts,
+   * `usedLLM: false`. Registered in the jobs map so `GET /jobs/{id}` resolves. */
+  private generateSuggestions(): Response {
+    const job: JobRow = {
+      id: this.nextId("job"),
+      kind: "generate_suggestions",
+      status: "done",
+      result: {
+        coverageGapsFound: 0,
+        surfacedNotInvokedFound: 0,
+        toolErrorsFound: 0,
+        proposalsCreated: 0,
+        proposalsSkipped: 0,
+        proposalsFailed: 0,
+        usedLLM: false,
+      },
+      error: null,
+    };
+    this.jobs.set(job.id, job);
+    return Response.json({ jobId: job.id, coalesced: false });
+  }
+
   /** `POST /intents/{id}/suggest` — enqueue a drafting job (resolves synchronously
-   * in the mock). Dedups against an existing pending draft for the same intent. */
+   * in the mock). Dedups against an existing pending or approved draft for the
+   * same intent. */
   private suggestIntent(intentId: string): Response {
     const qi = this.queryIntents.get(intentId);
     if (!qi) return Response.json({ error: "not_found" }, { status: 404 });
