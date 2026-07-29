@@ -1,0 +1,135 @@
+name: Release
+
+# Tag-driven npm release, slimmed from the ratel-ai/ratel release pipeline:
+# one pure-TS package, no platform matrix. Publishes via npm Trusted
+# Publishers (OIDC, no token secret) with provenance, gated by the `release`
+# GitHub environment. workflow_dispatch with dry_run validates the whole
+# pipeline without publishing.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run (validate but do not publish)
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag-version-check:
+    name: Tag/version sync
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      dist_tag: ${{ steps.compute.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: compute
+        shell: bash
+        run: |
+          set -e
+          pkg_version=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$pkg_version" != "$tag_version" ]; then
+              echo "::error::Tag v$tag_version does not match package.json version $pkg_version"
+              exit 1
+            fi
+          else
+            tag_version="$pkg_version"
+          fi
+
+          if ! grep -qE "^## ${tag_version//./\\.}\b" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::missing entry for version ${tag_version}"
+            exit 1
+          fi
+          if grep -E "^## ${tag_version//./\\.}\b" CHANGELOG.md | grep -qi unreleased; then
+            echo "::error file=CHANGELOG.md::version ${tag_version} is still marked unreleased"
+            exit 1
+          fi
+
+          if [[ "$tag_version" == *-rc.* ]]; then
+            echo "dist_tag=rc" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+          echo "version=$tag_version dist_tag done"
+
+  publish-npm:
+    name: Publish to npm
+    needs: tag-version-check
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Trusted Publishing (OIDC) — no npm token stored as a secret.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify npm CLI version
+        shell: bash
+        # Trusted Publishers requires npm CLI 11.5.1+.
+        run: |
+          set -e
+          npm --version
+          node -e "const v = require('child_process').execSync('npm --version').toString().trim(); const [maj, min, patch] = v.split('.').map(Number); if (maj < 11 || (maj === 11 && (min < 5 || (min === 5 && patch < 1)))) { console.error('npm CLI ' + v + ' < 11.5.1 (required for Trusted Publishers)'); process.exit(1); } console.log('npm ' + v + ' OK');"
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # prepublishOnly (lint + typecheck + test + build) runs inside npm publish,
+      # so the dry run below exercises the full gate before anything goes live.
+      - name: Preflight — dry-run publish
+        env:
+          DIST_TAG: ${{ needs.tag-version-check.outputs.dist_tag }}
+        run: npm publish --tag "$DIST_TAG" --dry-run
+      - name: Publish
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+          DIST_TAG: ${{ needs.tag-version-check.outputs.dist_tag }}
+        # Idempotent: skip if this exact version is already on the registry, so a
+        # re-run after a transient failure resumes instead of erroring (npm
+        # versions are immutable).
+        run: |
+          set -e
+          name=$(node -p "require('./package.json').name")
+          ver=$(node -p "require('./package.json').version")
+          if [ -z "$DRY_RUN" ] && [ "$(npm view "$name@$ver" version 2>/dev/null)" = "$ver" ]; then
+            echo "::notice::$name@$ver already published — skipping"
+          else
+            npm publish --provenance --tag "$DIST_TAG" $DRY_RUN
+          fi
+
+  github-release:
+    name: GitHub Release
+    needs: [tag-version-check, publish-npm]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.tag-version-check.outputs.version }}
+          DIST_TAG: ${{ needs.tag-version-check.outputs.dist_tag }}
+        run: |
+          set -e
+          flags=""
+          if [ "$DIST_TAG" = "rc" ]; then flags="--prerelease"; fi
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes $flags
