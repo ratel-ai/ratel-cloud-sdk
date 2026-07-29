@@ -94,7 +94,18 @@ export class Transport {
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetch ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.log = options.logger ?? (options.debug ? consoleLogEvent : undefined);
+    const sink = options.logger ?? (options.debug ? consoleLogEvent : undefined);
+    // Observability is best-effort: a throwing sink must not fail the request
+    // or leak an untyped error past the CloudSdkError contract.
+    this.log =
+      sink &&
+      ((event) => {
+        try {
+          sink(event);
+        } catch {
+          // deliberately swallowed
+        }
+      });
   }
 
   async request(

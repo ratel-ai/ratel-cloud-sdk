@@ -102,6 +102,18 @@ describe("Transport", () => {
     expect(response).toMatchObject({ phase: "response", status: 200, body: { ok: true } });
   });
 
+  it("a throwing logger sink never fails the request", async () => {
+    const stub = fetchStub(() => Response.json({ ok: true }));
+    const t = new Transport({
+      ...OPTS,
+      fetch: stub.fetch,
+      logger: () => {
+        throw new Error("broken sink");
+      },
+    });
+    await expect(t.json("GET", "/skills")).resolves.toEqual({ ok: true });
+  });
+
   it("emits an error log event when the request never gets a response", async () => {
     const events: CloudSdkLogEvent[] = [];
     const impl = (() => Promise.reject(new Error("socket hangup"))) as typeof fetch;
