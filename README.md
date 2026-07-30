@@ -464,6 +464,21 @@ The default filter forwards only signal-bearing spans: a `ratel.*` span name, or
 key under `gen_ai.*` / `ratel.*`. Your framework's wrapper noise (`ai.generateText`, HTTP
 auto-instrumentation) is dropped.
 
+One narrow exception covers the Vercel AI SDK, whose telemetry predates the GenAI semconv and
+sits entirely under `ai.*` — spans Ratel Cloud normalizes on ingest, so they are signal that
+simply doesn't say so in a key. `aiSdkSignalFilter` (exported, and composed into the default)
+admits exactly the `ai.toolCall` span and the **chat model** spans: an `ai.`-prefixed name
+containing `doGenerate` or `doStream` — `ai.generateText.doGenerate`, `ai.streamText.doStream`,
+`ai.generateObject.doGenerate`, `ai.streamObject.doStream`. Two things stay out, for two
+different reasons:
+
+- The `ai.streamText` / `ai.generateText` **wrappers** duplicate the whole prompt of the model
+  span beneath them (~100 KB per call, so roughly double the egress), and Cloud would read them
+  as a second anchor for the same LLM call and double-count its tokens.
+- `ai.embed.doEmbed`, `ai.embedMany.doEmbed`, and `ai.rerank.doRerank` are the **wrong
+  operation**: Cloud stamps `gen_ai.operation.name = "chat"` on every model span it accepts, so
+  these would ingest as phantom chat completions with no messages and no tools.
+
 **Emission and delivery are separate.** Every span reaches every processor on the provider
 intact; each destination's filter then decides independently. A span Ratel keeps may be dropped
 by your vendor's processor and vice versa — and nothing in the logs will say so. Override per

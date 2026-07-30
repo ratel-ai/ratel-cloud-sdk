@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+### Added
+
+- `aiSdkSignalFilter` (`@ratel-ai/cloud-sdk/otel`) — the Vercel AI SDK clause of the default span
+  filter, exported so hosts can compose or test it on its own.
+
+### Changed
+
+- The default span filter (`ratelSignalFilter`) now also forwards the AI SDK's legacy `ai.*`
+  telemetry that Ratel Cloud normalizes into `gen_ai.*` on ingest: the `ai.toolCall` span and the
+  chat model spans (an `ai.`-prefixed name containing `doGenerate` or `doStream`, e.g.
+  `ai.streamText.doStream`). Previously they carried no `gen_ai.*` attribute and never left the
+  process. Strictly additive — every span forwarded before is still forwarded. Two things stay
+  dropped, for two distinct reasons: the `ai.streamText` / `ai.generateText` **wrappers**, which
+  duplicate the prompt of the model span beneath them (roughly doubling egress) and would be
+  ingested as a second anchor for the same call; and the **embedding / rerank** spans
+  (`ai.embed.doEmbed`, `ai.embedMany.doEmbed`, `ai.rerank.doRerank`), which Cloud would stamp as
+  chat completions.
+
 ## 0.2.0
 
 Tracks ratel-cloud #36, which makes the intent flow asynchronous.

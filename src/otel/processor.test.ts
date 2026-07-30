@@ -37,6 +37,21 @@ describe("RatelSpanProcessor — signal filtering", () => {
     expect(exporter.getFinishedSpans()).toHaveLength(0);
   });
 
+  it("forwards the AI SDK's chat and tool spans, not its wrappers or embeddings", async () => {
+    const exporter = new InMemorySpanExporter();
+    const processor = new RatelSpanProcessor({ exporter });
+    const { provider, tracer } = hostProvider(processor);
+    tracer.startSpan("ai.streamText", { attributes: { "ai.model.id": "gpt-4" } }).end();
+    tracer.startSpan("ai.streamText.doStream", { attributes: { "ai.model.id": "gpt-4" } }).end();
+    tracer.startSpan("ai.toolCall", { attributes: { "ai.toolCall.name": "lookup" } }).end();
+    tracer.startSpan("ai.embed.doEmbed", { attributes: { "ai.model.id": "text-embed-3" } }).end();
+    await provider.forceFlush();
+    expect(exporter.getFinishedSpans().map((s) => s.name)).toEqual([
+      "ai.streamText.doStream",
+      "ai.toolCall",
+    ]);
+  });
+
   it("forwards a foreign-named span that carries gen_ai.* attributes", async () => {
     const exporter = new InMemorySpanExporter();
     await emit(new RatelSpanProcessor({ exporter }), "execute_tool lookup", {
