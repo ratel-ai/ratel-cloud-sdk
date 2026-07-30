@@ -25,7 +25,7 @@ export {
   type ResolvedOtlpConfig,
   resolveOtlpConfig,
 } from "./config.js";
-export { ratelSignalFilter, type SpanFilter } from "./filters.js";
+export { aiSdkSignalFilter, ratelSignalFilter, type SpanFilter } from "./filters.js";
 export {
   EXPERIMENT_BAGGAGE_PREFIX,
   RatelSpanProcessor,

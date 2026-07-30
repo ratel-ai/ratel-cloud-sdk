@@ -56,12 +56,15 @@ function host(ratel: RatelSpanProcessor) {
   return { provider, tracer: provider.getTracer("host"), vendor, everything };
 }
 
-/** The five span shapes the SDK and the AI SDK put on a shared provider. */
+/** The span shapes the SDK and the AI SDK put on a shared provider. */
 const STREAM: Array<[string, Record<string, string>]> = [
   ["ratel.search", {}],
   ["ratel.skill.load", {}],
   ["execute_tool lookup", { "gen_ai.tool.name": "lookup" }],
   ["ai.generateText", { "ai.model.id": "gpt-4" }],
+  ["ai.generateText.doGenerate", { "ai.model.id": "gpt-4" }],
+  ["ai.toolCall", { "ai.toolCall.name": "lookup" }],
+  ["ai.embed.doEmbed", { "ai.model.id": "text-embed-3" }],
   ["GET /health", { "http.method": "GET" }],
 ];
 
@@ -74,11 +77,16 @@ describe("Ratel Cloud as a co-tenant on a host-owned provider", () => {
 
     // Emission is shared and lossless: the unfiltered sink sees the whole stream.
     expect(everything.getFinishedSpans()).toHaveLength(STREAM.length);
-    // Delivery is per-destination: Ratel takes only the signal.
+    // Delivery is per-destination: Ratel takes only the signal — plus the AI SDK's
+    // legacy chat/tool spans, which Cloud normalizes into gen_ai.* on ingest. The
+    // `ai.generateText` wrapper (a duplicate of the prompt below it) and the embedding
+    // span (which Cloud would read as a chat completion) both stay out.
     expect(cloud.getFinishedSpans().map((s) => s.name)).toEqual([
       "ratel.search",
       "ratel.skill.load",
       "execute_tool lookup",
+      "ai.generateText.doGenerate",
+      "ai.toolCall",
     ]);
   });
 
