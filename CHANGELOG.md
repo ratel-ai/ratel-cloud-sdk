@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 - 2026-07-30
 
 ### Added
 
@@ -19,6 +19,14 @@
   ingested as a second anchor for the same call; and the **embedding / rerank** spans
   (`ai.embed.doEmbed`, `ai.embedMany.doEmbed`, `ai.rerank.doRerank`), which Cloud would stamp as
   chat completions.
+
+### Fixed
+
+- The `@opentelemetry/exporter-trace-otlp-proto` peer range is `>=0.220.0 <1.0.0` instead of
+  `^0.220.0`. On a 0.x version a caret pins the minor, so a host already on 0.221.0 (which
+  `@opentelemetry/sdk-trace-node@2.10.0` pulls in transitively) could not satisfy the peer without
+  an override. The processor only uses the stable `OTLPTraceExporter({ url, headers })`
+  constructor, unchanged across the 0.2xx line.
 
 ## 0.2.0
 
