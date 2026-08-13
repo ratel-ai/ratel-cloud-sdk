@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CatalogSnapshotsPublisher, hashCatalogSnapshot } from "./index.js";
+import * as root from "../index.js";
+import { attach, CatalogSnapshotsPublisher, hashCatalogSnapshot } from "./index.js";
 
 const PKG = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../../package.json"), "utf8"),
@@ -20,5 +21,13 @@ describe("the /runtime subpath", () => {
   it("exports catalog snapshot publication and hashing", () => {
     expect(CatalogSnapshotsPublisher).toBeTypeOf("function");
     expect(hashCatalogSnapshot).toBeTypeOf("function");
+  });
+
+  it("exports one-line runtime attachment", () => {
+    expect(attach).toBeTypeOf("function");
+  });
+
+  it("keeps runtime attachment off the dependency-free root", () => {
+    expect(root).not.toHaveProperty("attach");
   });
 });

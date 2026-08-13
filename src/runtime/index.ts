@@ -5,6 +5,16 @@ export type {
   RuntimeCatalogToolDefinition,
   RuntimeEvent,
 } from "../types.js";
+export {
+  type AttachOptions,
+  attach,
+  type RatelRuntime,
+  type RatelRuntimeCatalog,
+  type RatelRuntimeCatalogToolDefinition,
+  type RatelRuntimeEvents,
+  type RuntimeAttachment,
+  type RuntimeEventSubscription,
+} from "./attach.js";
 export { hashCatalogSnapshot } from "./hash.js";
 export {
   RUNTIME_EVENT_BATCH_MAX_BYTES,
