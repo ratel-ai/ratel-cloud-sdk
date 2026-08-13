@@ -71,6 +71,9 @@ with the same runtime return the same handle. `sourceId` defaults to the runtime
 const cloudRuntime = ratelCloud.attach(runtime, { sourceId: "checkout-worker" });
 ```
 
+Set `RATEL_CLOUD_EVENTS=off` before calling `attach()` to disable event delivery. Catalog snapshots
+remain enabled; the events publisher reads this kill switch once when the attachment is created.
+
 Delivery is fail-open and in memory. On long-running processes, call `close()` during final
 shutdown to unsubscribe and drain accepted work. In serverless handlers, keep the attachment for
 warm invocations and explicitly `flush()` before each invocation ends:

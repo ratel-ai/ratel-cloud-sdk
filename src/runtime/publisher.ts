@@ -1,14 +1,19 @@
 import { randomBytes } from "node:crypto";
 import { DEFAULT_BASE_URL, DEFAULT_TIMEOUT_MS } from "../transport.js";
 import type { RuntimeEvent } from "../types.js";
+import {
+  createRetryConfig,
+  nonNegative,
+  positiveInteger,
+  type RetryConfig,
+  requestWithRetry,
+  sleep,
+} from "./retry.js";
 
 export const RUNTIME_EVENT_BATCH_MAX_EVENTS = 5_000;
 export const RUNTIME_EVENT_BATCH_MAX_BYTES = 4 * 1_024 * 1_024;
 export const RUNTIME_EVENT_MAX_BYTES = 64 * 1_024;
 
-const DEFAULT_MAX_ATTEMPTS = 3;
-const DEFAULT_INITIAL_BACKOFF_MS = 250;
-const DEFAULT_MAX_BACKOFF_MS = 30_000;
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
 
 const BATCH_PREFIX = '{"events":[';
@@ -66,15 +71,13 @@ export class RuntimeEventsPublisher {
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
   readonly #onRejected: ((rejected: readonly RuntimeEventRejection[]) => void) | undefined;
-  readonly #maxAttempts: number;
-  readonly #initialBackoffMs: number;
-  readonly #maxBackoffMs: number;
+  readonly #retry: RetryConfig;
   readonly #sleep: (ms: number) => PromiseLike<void>;
   readonly #enabled: boolean;
   readonly #queueCapacity: number;
   readonly #flushIntervalMs: number;
   readonly #queue: RuntimeEvent[] = [];
-  #dropWindow: DropWindow | undefined;
+  readonly #dropWindows = new Map<string, Map<string, DropWindow>>();
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
 
@@ -84,12 +87,7 @@ export class RuntimeEventsPublisher {
     this.#fetch = options.fetch ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#onRejected = options.onRejected;
-    this.#maxAttempts = positiveInteger(options.retry?.maxAttempts, DEFAULT_MAX_ATTEMPTS);
-    this.#initialBackoffMs = nonNegative(
-      options.retry?.initialBackoffMs,
-      DEFAULT_INITIAL_BACKOFF_MS,
-    );
-    this.#maxBackoffMs = nonNegative(options.retry?.maxBackoffMs, DEFAULT_MAX_BACKOFF_MS);
+    this.#retry = createRetryConfig(options.retry);
     this.#sleep = options.sleep ?? sleep;
     this.#enabled = process.env.RATEL_CLOUD_EVENTS?.trim().toLowerCase() !== "off";
     this.#queueCapacity = positiveInteger(options.queueCapacity, 1_024);
@@ -123,9 +121,11 @@ export class RuntimeEventsPublisher {
   async #drainQueued(): Promise<void> {
     try {
       const events = this.#queue.splice(0);
-      const dropWindow = this.#dropWindow;
-      this.#dropWindow = undefined;
-      if (dropWindow) events.push(droppedEvent(dropWindow));
+      const dropWindows = [...this.#dropWindows.values()].flatMap((bySession) => [
+        ...bySession.values(),
+      ]);
+      this.#dropWindows.clear();
+      events.push(...dropWindows.map(droppedEvent));
       const built = createBatches(events);
       this.#surfaceRejections(built.rejected);
       for (const batch of built.batches) {
@@ -152,10 +152,9 @@ export class RuntimeEventsPublisher {
   }
 
   async #sendBatch(batch: SerializedBatch): Promise<void> {
-    for (let attempt = 0; attempt < this.#maxAttempts; attempt += 1) {
-      let retryAfterMs: number | undefined;
-      try {
-        const response = await this.#fetch(`${this.#baseUrl}/events`, {
+    const response = await requestWithRetry(
+      () =>
+        this.#fetch(`${this.#baseUrl}/events`, {
           method: "POST",
           headers: {
             authorization: `Bearer ${this.#apiKey}`,
@@ -163,26 +162,11 @@ export class RuntimeEventsPublisher {
           },
           body: batch.body,
           signal: AbortSignal.timeout(this.#timeoutMs),
-        });
-        if (response.ok) {
-          this.#surfaceRejections(await readRejections(response));
-          return;
-        }
-        if (!isRetryableStatus(response.status)) return;
-        retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
-      } catch {
-        // Network and timeout failures are retryable; exhaustion remains fail-open.
-      }
-      if (attempt + 1 < this.#maxAttempts) {
-        const delay =
-          retryAfterMs ?? Math.min(this.#initialBackoffMs * 2 ** attempt, this.#maxBackoffMs);
-        try {
-          await this.#sleep(delay);
-        } catch {
-          // An injected timer cannot make delivery fail closed.
-        }
-      }
-    }
+        }),
+      this.#retry,
+      this.#sleep,
+    );
+    if (response?.ok) this.#surfaceRejections(await readRejections(response));
   }
 
   #surfaceRejections(rejected: readonly RuntimeEventRejection[]): void {
@@ -196,18 +180,24 @@ export class RuntimeEventsPublisher {
 
   #recordDrop(event: RuntimeEvent): void {
     const timestamp = Number.isFinite(event.ts) ? event.ts : Date.now();
-    if (this.#dropWindow) {
-      this.#dropWindow.count += 1;
-      this.#dropWindow.endTs = timestamp;
+    let bySession = this.#dropWindows.get(event.source_id);
+    if (bySession === undefined) {
+      bySession = new Map();
+      this.#dropWindows.set(event.source_id, bySession);
+    }
+    const dropWindow = bySession.get(event.session_id);
+    if (dropWindow) {
+      dropWindow.count += 1;
+      dropWindow.endTs = timestamp;
       return;
     }
-    this.#dropWindow = {
+    bySession.set(event.session_id, {
       count: 1,
       startTs: timestamp,
       endTs: timestamp,
       sessionId: event.session_id,
       sourceId: event.source_id,
-    };
+    });
   }
 }
 
@@ -293,30 +283,6 @@ async function readRejections(response: Response): Promise<RuntimeEventRejection
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
-}
-
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
-}
-
-function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
-  if (value === null) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : undefined;
-}
-
-function positiveInteger(value: number | undefined, fallback: number): number {
-  return Number.isSafeInteger(value) && (value ?? 0) > 0 ? (value as number) : fallback;
-}
-
-function nonNegative(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) && (value ?? -1) >= 0 ? (value as number) : fallback;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function droppedEvent(window: DropWindow): RuntimeEvent {

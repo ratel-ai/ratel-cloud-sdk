@@ -128,6 +128,32 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(requests[1]?.headers).toMatchObject({ "if-match": '"server-version-1"' });
   });
 
+  it("recovers from a stale If-Match before publishing later replacements", async () => {
+    const requests: RequestInit[] = [];
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push(init ?? {});
+        if (requests.length === 2) return Response.json({}, { status: 412 });
+        return Response.json({}, { headers: { ETag: `"server-version-${requests.length}"` } });
+      }) as typeof fetch,
+    });
+
+    publisher.publish({ source_id: "worker-a", tools: [tool("one")] });
+    await publisher.flush();
+    publisher.publish({ source_id: "worker-a", tools: [tool("two")] });
+    await publisher.flush();
+    publisher.publish({ source_id: "worker-a", tools: [tool("three")] });
+    await publisher.flush();
+
+    expect(requests.map((request) => request.headers)).toEqual([
+      expect.not.objectContaining({ "if-match": expect.anything() }),
+      expect.objectContaining({ "if-match": '"server-version-1"' }),
+      expect.not.objectContaining({ "if-match": expect.anything() }),
+      expect.objectContaining({ "if-match": '"server-version-3"' }),
+    ]);
+  });
+
   it("retries transient snapshot failures with exponential backoff", async () => {
     const sleeps: number[] = [];
     let requests = 0;
@@ -218,6 +244,27 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(requests[0]?.headers).not.toHaveProperty("if-match");
     expect(requests[1]?.headers).not.toHaveProperty("if-match");
     expect(requests[2]?.headers).toMatchObject({ "if-match": '"source-1"' });
+  });
+
+  it("keeps each source's changed snapshot queued independently", async () => {
+    const sources: string[] = [];
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { source_id: string };
+        sources.push(body.source_id);
+        return Response.json({}, { headers: { ETag: `"${body.source_id}-${sources.length}"` } });
+      }) as typeof fetch,
+    });
+
+    publisher.publish({ source_id: "worker-b", tools: [tool("one")] });
+    await publisher.flush();
+    publisher.publish({ source_id: "worker-a", tools: [tool("one")] });
+    publisher.publish({ source_id: "worker-b", tools: [tool("one")] });
+    publisher.publish({ source_id: "worker-c", tools: [tool("one")] });
+    await publisher.flush();
+
+    expect(sources).toEqual(["worker-b", "worker-a", "worker-c"]);
   });
 
   it("serializes overlapping flushes so replacements use the latest ETag", async () => {

@@ -252,6 +252,33 @@ describe("RuntimeEventsPublisher", () => {
     });
   });
 
+  it("attributes overflow ledgers to each dropped event's source and session", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const publisher = new RuntimeEventsPublisher({
+      apiKey: "rtl_test",
+      queueCapacity: 2,
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { events: RuntimeEvent[] };
+        delivered.push(...body.events);
+        return Response.json(
+          { accepted: body.events.length, duplicates: 0, rejected: [] },
+          { status: 202 },
+        );
+      }) as typeof fetch,
+    });
+
+    publisher.publish({ ...EVENT, event_id: "dropped-a", source_id: "a", session_id: "one" });
+    publisher.publish({ ...EVENT, event_id: "dropped-b", source_id: "b", session_id: "two" });
+    publisher.publish({ ...EVENT, event_id: "kept-c" });
+    publisher.publish({ ...EVENT, event_id: "kept-d" });
+    await publisher.flush();
+
+    expect(delivered.filter((event) => event.type === "events_dropped")).toEqual([
+      expect.objectContaining({ source_id: "a", session_id: "one", dropped_count: 1 }),
+      expect.objectContaining({ source_id: "b", session_id: "two", dropped_count: 1 }),
+    ]);
+  });
+
   it("rejects an event over 64 KiB locally without sinking valid events", async () => {
     const delivered: RuntimeEvent[] = [];
     const rejected: Array<{ eventId: string | null; reason: string }> = [];

@@ -2,11 +2,15 @@ import { DEFAULT_BASE_URL, DEFAULT_TIMEOUT_MS } from "../transport.js";
 import type { RuntimeCatalogSnapshot, RuntimeCatalogToolDefinition } from "../types.js";
 import { hashCatalogSnapshot } from "./hash.js";
 import type { RuntimeEventsRetryOptions } from "./publisher.js";
+import {
+  createRetryConfig,
+  nonNegative,
+  type RetryConfig,
+  requestWithRetry,
+  sleep,
+} from "./retry.js";
 
 const DEFAULT_DEBOUNCE_MS = 500;
-const DEFAULT_MAX_ATTEMPTS = 3;
-const DEFAULT_INITIAL_BACKOFF_MS = 250;
-const DEFAULT_MAX_BACKOFF_MS = 30_000;
 
 interface CatalogSnapshotRequest {
   readonly source_id: string;
@@ -46,13 +50,11 @@ export class CatalogSnapshotsPublisher {
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
   readonly #debounceMs: number;
-  readonly #maxAttempts: number;
-  readonly #initialBackoffMs: number;
-  readonly #maxBackoffMs: number;
+  readonly #retry: RetryConfig;
   readonly #sleep: (ms: number) => PromiseLike<void>;
   readonly #publishedHashes = new Map<string, string>();
   readonly #etags = new Map<string, string>();
-  #pending: PendingCatalogSnapshot | undefined;
+  readonly #pending = new Map<string, PendingCatalogSnapshot>();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
 
@@ -62,12 +64,7 @@ export class CatalogSnapshotsPublisher {
     this.#fetch = options.fetch ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#debounceMs = nonNegative(options.debounceMs, DEFAULT_DEBOUNCE_MS);
-    this.#maxAttempts = positiveInteger(options.retry?.maxAttempts, DEFAULT_MAX_ATTEMPTS);
-    this.#initialBackoffMs = nonNegative(
-      options.retry?.initialBackoffMs,
-      DEFAULT_INITIAL_BACKOFF_MS,
-    );
-    this.#maxBackoffMs = nonNegative(options.retry?.maxBackoffMs, DEFAULT_MAX_BACKOFF_MS);
+    this.#retry = createRetryConfig(options.retry);
     this.#sleep = options.sleep ?? sleep;
   }
 
@@ -75,11 +72,11 @@ export class CatalogSnapshotsPublisher {
     try {
       const hash = hashCatalogSnapshot(snapshot);
       if (hash === this.#publishedHashes.get(snapshot.source_id)) {
-        this.#pending = undefined;
-        this.#clearTimer();
+        this.#pending.delete(snapshot.source_id);
+        if (this.#pending.size === 0) this.#clearTimer();
         return;
       }
-      this.#pending = { hash, request: toRequest(snapshot) };
+      this.#pending.set(snapshot.source_id, { hash, request: toRequest(snapshot) });
       this.#scheduleFlush();
     } catch {
       // Malformed definitions cannot escape into the agent operation.
@@ -97,54 +94,48 @@ export class CatalogSnapshotsPublisher {
   }
 
   async #drainPending(): Promise<void> {
-    const pending = this.#pending;
-    this.#pending = undefined;
-    if (!pending) return;
-    try {
-      const sourceId = pending.request.source_id;
-      if (pending.hash === this.#publishedHashes.get(sourceId)) return;
-      const response = await this.#send(pending.request, this.#etags.get(sourceId));
-      if (response.ok) {
-        this.#publishedHashes.set(sourceId, pending.hash);
-        this.#etags.set(sourceId, response.headers.get("etag") ?? `"${pending.hash}"`);
+    const pendingSnapshots = [...this.#pending.values()];
+    this.#pending.clear();
+    for (const pending of pendingSnapshots) {
+      try {
+        const sourceId = pending.request.source_id;
+        if (pending.hash === this.#publishedHashes.get(sourceId)) continue;
+        const etag = this.#etags.get(sourceId);
+        let response = await this.#send(pending.request, etag);
+        if (etag !== undefined && response.status === 412) {
+          this.#etags.delete(sourceId);
+          response = await this.#send(pending.request, undefined);
+        }
+        if (response.ok) {
+          this.#publishedHashes.set(sourceId, pending.hash);
+          this.#etags.set(sourceId, response.headers.get("etag") ?? `"${pending.hash}"`);
+        }
+      } catch {
+        // Snapshot publication is always fail-open.
       }
-    } catch {
-      // Snapshot publication is always fail-open.
     }
   }
 
   async #send(request: CatalogSnapshotRequest, etag: string | undefined): Promise<Response> {
-    let response: Response | undefined;
-    for (let attempt = 0; attempt < this.#maxAttempts; attempt += 1) {
-      let retryAfterMs: number | undefined;
-      try {
-        const headers: Record<string, string> = {
-          authorization: `Bearer ${this.#apiKey}`,
-          "content-type": "application/json",
-        };
-        if (etag) headers["if-match"] = etag;
-        response = await this.#fetch(`${this.#baseUrl}/catalog/snapshot`, {
-          method: "PUT",
-          headers,
-          body: JSON.stringify(request),
-          signal: AbortSignal.timeout(this.#timeoutMs),
-        });
-        if (response.ok || !isRetryableStatus(response.status)) return response;
-        retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
-      } catch {
-        // Network and timeout failures are retryable.
-      }
-      if (attempt + 1 < this.#maxAttempts) {
-        const delay =
-          retryAfterMs ?? Math.min(this.#initialBackoffMs * 2 ** attempt, this.#maxBackoffMs);
-        try {
-          await this.#sleep(delay);
-        } catch {
-          // An injected timer cannot make delivery fail closed.
-        }
-      }
-    }
-    return response ?? Response.error();
+    return (
+      (await requestWithRetry(
+        () => {
+          const headers: Record<string, string> = {
+            authorization: `Bearer ${this.#apiKey}`,
+            "content-type": "application/json",
+          };
+          if (etag) headers["if-match"] = etag;
+          return this.#fetch(`${this.#baseUrl}/catalog/snapshot`, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify(request),
+            signal: AbortSignal.timeout(this.#timeoutMs),
+          });
+        },
+        this.#retry,
+        this.#sleep,
+      )) ?? Response.error()
+    );
   }
 
   #scheduleFlush(): void {
@@ -179,28 +170,4 @@ function toToolRequest(tool: RuntimeCatalogToolDefinition): CatalogSnapshotToolR
     output_schema: tool.outputSchema ?? null,
     metadata: tool.metadata ?? null,
   };
-}
-
-function nonNegative(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) && (value ?? -1) >= 0 ? (value as number) : fallback;
-}
-
-function positiveInteger(value: number | undefined, fallback: number): number {
-  return Number.isSafeInteger(value) && (value ?? 0) > 0 ? (value as number) : fallback;
-}
-
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
-}
-
-function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
-  if (value === null) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

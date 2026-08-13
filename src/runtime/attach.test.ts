@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RuntimeEvent } from "../types.js";
 import { attach, type RatelRuntime, type RatelRuntimeEvents } from "./attach.js";
 
@@ -132,6 +132,23 @@ describe("attach", () => {
 
     await expect(handle.flush()).resolves.toBeUndefined();
     await expect(handle.close()).resolves.toBeUndefined();
+  });
+
+  it("warns once when runtime delivery has no API key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchImpl = (async () => Response.json({}, { status: 401 })) as typeof fetch;
+    try {
+      const first = attach(new FakeRuntime(), { apiKey: "", fetch: fetchImpl });
+      const second = attach(new FakeRuntime(), { apiKey: "", fetch: fetchImpl });
+      await Promise.all([first.close(), second.close()]);
+
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] RATEL_API_KEY is missing; runtime delivery will fail authentication.",
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("accepts the SDK's named JSON Schema type structurally", () => {

@@ -58,6 +58,7 @@ const NOOP_ATTACHMENT: RuntimeAttachment = {
   flush: async () => {},
   close: async () => {},
 };
+let missingApiKeyWarned = false;
 
 /** Subscribe one Ratel runtime to fail-open Cloud delivery. */
 export function attach(runtime: RatelRuntime, options: AttachOptions = {}): RuntimeAttachment {
@@ -78,6 +79,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     snapshotDebounceMs,
     ...delivery
   } = options;
+  warnIfMissingApiKey(apiKey);
   const publisher = new RuntimeEventsPublisher({ ...delivery, apiKey });
   const snapshots = new CatalogSnapshotsPublisher({
     apiKey,
@@ -140,6 +142,18 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
   };
   ATTACHMENTS.set(runtime, handle);
   return handle;
+}
+
+function warnIfMissingApiKey(apiKey: string): void {
+  if (missingApiKeyWarned || apiKey.trim() !== "") return;
+  missingApiKeyWarned = true;
+  try {
+    console.warn(
+      "[ratel-cloud-sdk/runtime] RATEL_API_KEY is missing; runtime delivery will fail authentication.",
+    );
+  } catch {
+    // Diagnostics remain fail-open too.
+  }
 }
 
 function toCatalogTool(tool: RatelRuntimeCatalogToolDefinition): RuntimeCatalogToolDefinition {
