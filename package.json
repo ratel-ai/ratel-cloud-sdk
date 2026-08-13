@@ -65,6 +65,7 @@
     "lint": "biome check src",
     "test": "vitest run",
     "example:e2e": "node examples/e2e.mjs",
+    "example:runtime-e2e": "node examples/runtime-attach-e2e.mjs",
     "example:ui": "node examples/ui/server.mjs"
   },
   "peerDependencies": {
