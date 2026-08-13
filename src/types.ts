@@ -64,6 +64,24 @@ export interface RuntimeEvent {
   readonly [field: string]: unknown;
 }
 
+/** Serializable tool state accepted by the runtime catalog snapshot publisher. */
+export interface RuntimeCatalogToolDefinition {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema?: Record<string, unknown> | null;
+  readonly outputSchema?: Record<string, unknown> | null;
+  readonly metadata?: Record<string, unknown> | null;
+}
+
+/** Complete tool state for one stable runtime source. */
+export interface RuntimeCatalogSnapshot {
+  readonly source_id: string;
+  readonly tools: readonly RuntimeCatalogToolDefinition[];
+  /** Accepted for parity with the core SDK snapshot; not part of Cloud's tool inventory. */
+  readonly skills?: readonly unknown[];
+}
+
 /* — managed skills (write surface) ——————————————————————————————————————— */
 
 export const SKILL_STATUSES = ["draft", "published", "archived"] as const;

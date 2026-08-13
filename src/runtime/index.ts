@@ -1,6 +1,11 @@
 /** `@ratel-ai/cloud-sdk/runtime` — fail-open runtime facts delivery. */
 
-export type { RuntimeEvent } from "../types.js";
+export type {
+  RuntimeCatalogSnapshot,
+  RuntimeCatalogToolDefinition,
+  RuntimeEvent,
+} from "../types.js";
+export { hashCatalogSnapshot } from "./hash.js";
 export {
   RUNTIME_EVENT_BATCH_MAX_BYTES,
   RUNTIME_EVENT_BATCH_MAX_EVENTS,
@@ -10,3 +15,7 @@ export {
   type RuntimeEventsPublisherOptions,
   type RuntimeEventsRetryOptions,
 } from "./publisher.js";
+export {
+  CatalogSnapshotsPublisher,
+  type CatalogSnapshotsPublisherOptions,
+} from "./snapshots.js";
