@@ -87,6 +87,9 @@ export async function handler(request: Request) {
 process.once("SIGTERM", () => void cloudRuntime.close());
 ```
 
+The cross-repository live acceptance test is opt-in with `RATEL_E2E=1`; see the
+[runtime attach E2E example](./examples/README.md#runtime-attach-e2emjs--live-runtime-attach-acceptance).
+
 Set `debug: true` to log every call — `→ GET /skills?status=published` on the way out, `← 200 …`
 with the parsed response body on the way back (the auth header is never logged). For structured
 logging, pass a `logger: (event: CloudSdkLogEvent) => void` sink instead (it takes precedence over
