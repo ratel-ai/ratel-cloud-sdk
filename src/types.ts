@@ -45,6 +45,25 @@ export interface CatalogResponse {
   skills: WireSkill[];
 }
 
+/* — runtime events envelope/v2 ——————————————————————————————————————————— */
+
+/** Frozen envelope shared by every runtime fact sent to Ratel Cloud. */
+export interface RuntimeEvent {
+  readonly v: 2;
+  readonly event_id: string;
+  readonly ts: number;
+  readonly session_id: string;
+  readonly source_id: string;
+  readonly type: string;
+  readonly invocation_id?: string;
+  readonly catalog_version?: string;
+  readonly environment?: string;
+  readonly end_user_id?: string;
+  readonly trace_id?: string;
+  readonly span_id?: string;
+  readonly [field: string]: unknown;
+}
+
 /* — managed skills (write surface) ——————————————————————————————————————— */
 
 export const SKILL_STATUSES = ["draft", "published", "archived"] as const;
