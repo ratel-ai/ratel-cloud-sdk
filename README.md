@@ -49,6 +49,44 @@ const cloud = new RatelCloudSdk({
 });
 ```
 
+## Runtime events and catalog snapshots
+
+Use the `/runtime` subpath to stream Ratel SDK runtime facts and publish its complete tool catalog.
+Set `RATEL_API_KEY`, then attach once after creating the Ratel runtime:
+
+```ts
+import { ratel } from "@ratel-ai/sdk";
+import * as ratelCloud from "@ratel-ai/cloud-sdk/runtime";
+
+const runtime = ratel();
+const cloudRuntime = ratelCloud.attach(runtime);
+```
+
+`attach()` subscribes to search, invocation, registration, and experiment facts. It publishes an
+initial catalog snapshot and refreshes it after tool or skill registration churn. Repeated calls
+with the same runtime return the same handle. `sourceId` defaults to the runtime's stable OTel
+`service.name`; override it only with another stable deployment identity:
+
+```ts
+const cloudRuntime = ratelCloud.attach(runtime, { sourceId: "checkout-worker" });
+```
+
+Delivery is fail-open and in memory. On long-running processes, call `close()` during final
+shutdown to unsubscribe and drain accepted work. In serverless handlers, keep the attachment for
+warm invocations and explicitly `flush()` before each invocation ends:
+
+```ts
+export async function handler(request: Request) {
+  try {
+    return await handleRequest(request, runtime);
+  } finally {
+    await cloudRuntime.flush();
+  }
+}
+
+process.once("SIGTERM", () => void cloudRuntime.close());
+```
+
 Set `debug: true` to log every call — `→ GET /skills?status=published` on the way out, `← 200 …`
 with the parsed response body on the way back (the auth header is never logged). For structured
 logging, pass a `logger: (event: CloudSdkLogEvent) => void` sink instead (it takes precedence over
