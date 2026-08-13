@@ -78,6 +78,8 @@ export interface RuntimeCatalogToolDefinition {
 export interface RuntimeCatalogSnapshot {
   readonly source_id: string;
   readonly tools: readonly RuntimeCatalogToolDefinition[];
+  /** Accepted for parity with the core SDK snapshot; not part of Cloud's tool inventory. */
+  readonly skills?: readonly unknown[];
 }
 
 /* — managed skills (write surface) ——————————————————————————————————————— */
