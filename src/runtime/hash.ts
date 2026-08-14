@@ -17,9 +17,9 @@ interface CanonicalCatalogSnapshot {
 
 /** Return Cloud's canonical SHA-256 content hash for a full source snapshot. */
 export function hashCatalogSnapshot(snapshot: RuntimeCatalogSnapshot): string {
-  return createHash("sha256")
-    .update(stableJson(canonicalSnapshot(snapshot)), "utf8")
-    .digest("hex");
+  const canonical = stableJson(canonicalSnapshot(snapshot));
+  if (canonical === undefined) throw new TypeError("catalog snapshot cannot be serialized");
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
 function canonicalSnapshot(snapshot: RuntimeCatalogSnapshot): CanonicalCatalogSnapshot {
@@ -30,30 +30,43 @@ function canonicalSnapshot(snapshot: RuntimeCatalogSnapshot): CanonicalCatalogSn
         toolId: tool.id,
         name: tool.name,
         description: tool.description ?? "",
-        inputSchema: jsonRecord(tool.inputSchema),
-        outputSchema: jsonRecord(tool.outputSchema),
-        metadata: jsonRecord(tool.metadata),
+        inputSchema: tool.inputSchema ?? null,
+        outputSchema: tool.outputSchema ?? null,
+        metadata: tool.metadata ?? null,
       }))
       .sort((left, right) => Buffer.compare(Buffer.from(left.toolId), Buffer.from(right.toolId))),
   };
 }
 
-function jsonRecord(
-  value: Record<string, unknown> | null | undefined,
-): Record<string, unknown> | null {
-  if (value == null) return null;
-  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+function stableJson(value: unknown, key = ""): string | undefined {
+  const transformed = toJsonValue(value, key);
+  if (!Object.is(transformed, value)) return stableJson(transformed, key);
+  if (Array.isArray(value)) {
+    return `[${Array.from(
+      { length: value.length },
+      (_, index) => stableJson(value[index], String(index)) ?? "null",
+    ).join(",")}]`;
+  }
   if (isRecord(value)) {
-    return `{${Object.keys(value)
+    const properties = Object.keys(value)
       .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
-      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
-      .join(",")}}`;
+      .flatMap((property) => {
+        const json = stableJson(value[property], property);
+        return json === undefined ? [] : `${JSON.stringify(property)}:${json}`;
+      });
+    return `{${properties.join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function toJsonValue(value: unknown, key: string): unknown {
+  if (!isRecord(value) && !Array.isArray(value)) return value;
+  const toJSON = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === "function") return toJSON.call(value, key);
+  if (value instanceof Number || value instanceof String || value instanceof Boolean) {
+    return value.valueOf();
+  }
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
