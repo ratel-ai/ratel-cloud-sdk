@@ -185,7 +185,7 @@ describe("RuntimeEventsPublisher", () => {
     const publisher = new RuntimeEventsPublisher({
       apiKey: "rtl_test",
       fetch: fetchImpl,
-      retry: { maxAttempts: 3, initialBackoffMs: 100 },
+      retry: { maxAttempts: 3, initialBackoffMs: 100, random: () => 1 },
       sleep: async (ms) => {
         sleeps.push(ms);
       },

@@ -379,7 +379,7 @@ describe("CatalogSnapshotsPublisher", () => {
         if (requests === 2) return Response.json({}, { status: 503 });
         return Response.json({}, { headers: { ETag: '"published"' } });
       }) as typeof fetch,
-      retry: { maxAttempts: 3, initialBackoffMs: 100 },
+      retry: { maxAttempts: 3, initialBackoffMs: 100, random: () => 1 },
       sleep: async (ms) => {
         sleeps.push(ms);
       },

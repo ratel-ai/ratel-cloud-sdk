@@ -48,6 +48,8 @@ export interface RuntimeEventsRetryOptions {
   maxAttempts?: number;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
+  /** Random source for full-jitter backoff. Defaults to Math.random. */
+  random?: () => number;
 }
 
 export interface RuntimeEventsPublisherOptions {

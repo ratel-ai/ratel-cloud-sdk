@@ -1,5 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sleep } from "./retry.js";
+import { createRetryConfig, requestWithRetry, sleep } from "./retry.js";
+
+describe("requestWithRetry", () => {
+  it("applies injected full jitter after clamping exponential backoff", async () => {
+    const sleeps: number[] = [];
+    const random = vi.fn(() => 0.5);
+    const retry = createRetryConfig({
+      maxAttempts: 3,
+      initialBackoffMs: 100,
+      maxBackoffMs: 150,
+      random,
+    });
+
+    await requestWithRetry(
+      async () => {
+        throw new Error("offline");
+      },
+      retry,
+      async (ms) => {
+        sleeps.push(ms);
+      },
+    );
+
+    expect(sleeps).toEqual([50, 75]);
+    expect(random).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("retry sleep", () => {
   afterEach(() => vi.restoreAllMocks());

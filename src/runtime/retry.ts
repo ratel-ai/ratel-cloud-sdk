@@ -6,12 +6,14 @@ export interface RetryOptions {
   maxAttempts?: number;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
+  random?: () => number;
 }
 
 export interface RetryConfig {
   readonly maxAttempts: number;
   readonly initialBackoffMs: number;
   readonly maxBackoffMs: number;
+  readonly random: () => number;
 }
 
 export async function requestWithRetry(
@@ -30,10 +32,12 @@ export async function requestWithRetry(
       // Network and timeout failures are retryable; exhaustion remains fail-open.
     }
     if (attempt + 1 < retry.maxAttempts) {
-      const delay = Math.min(
+      const cappedDelay = Math.min(
         retryAfterMs ?? retry.initialBackoffMs * 2 ** attempt,
         retry.maxBackoffMs,
       );
+      const delay =
+        retryAfterMs === undefined ? fullJitter(cappedDelay, retry.random) : cappedDelay;
       try {
         await sleep(delay);
       } catch {
@@ -49,6 +53,7 @@ export function createRetryConfig(options: RetryOptions | undefined): RetryConfi
     maxAttempts: positiveInteger(options?.maxAttempts, DEFAULT_MAX_ATTEMPTS),
     initialBackoffMs: nonNegative(options?.initialBackoffMs, DEFAULT_INITIAL_BACKOFF_MS),
     maxBackoffMs: nonNegative(options?.maxBackoffMs, DEFAULT_MAX_BACKOFF_MS),
+    random: options?.random ?? Math.random,
   };
 }
 
@@ -69,6 +74,12 @@ export function sleep(ms: number): Promise<void> {
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
+}
+
+function fullJitter(delayMs: number, random: () => number): number {
+  const sample = random();
+  const ratio = Number.isFinite(sample) ? Math.min(Math.max(sample, 0), 1) : 0;
+  return delayMs * ratio;
 }
 
 function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
