@@ -95,6 +95,7 @@ export class RuntimeEventsPublisher {
   #overflowDropWindow: DropWindow | undefined;
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
+  #closed = false;
 
   constructor(options: RuntimeEventsPublisherOptions) {
     this.#apiKey = options.apiKey;
@@ -114,6 +115,11 @@ export class RuntimeEventsPublisher {
 
   publish(event: RuntimeEvent): void {
     if (!this.#enabled) return;
+    if (this.#closed) {
+      // Late native drains after close() may not schedule delivery anymore.
+      this.#deliveryStatus.recordEventDrops(1);
+      return;
+    }
     try {
       if (this.#queue.length === this.#queueCapacity) {
         const dropped = this.#queue.shift();
@@ -134,6 +140,12 @@ export class RuntimeEventsPublisher {
     );
     this.#draining = drain;
     await drain;
+  }
+
+  /** Stop accepting events, then deliver everything already queued. */
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.flush();
   }
 
   /** Probe event ingestion with an empty batch without mutating the queue. */
@@ -172,7 +184,7 @@ export class RuntimeEventsPublisher {
   }
 
   #scheduleFlush(): void {
-    if (this.#flushTimer !== undefined) return;
+    if (this.#closed || this.#flushTimer !== undefined) return;
     this.#flushTimer = setTimeout(() => {
       this.#flushTimer = undefined;
       void this.flush();

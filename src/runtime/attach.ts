@@ -211,7 +211,14 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
         }
         ATTACHMENTS.delete(runtime);
         try {
-          await Promise.all([publisher.flush(), snapshots.close()]);
+          // One more drain captures envelopes the native queue delivered after unsubscribe.
+          await Promise.all([publisher.flush(), snapshots.flush()]);
+        } catch {
+          // Publisher lifecycle is fail-open too.
+        }
+        try {
+          // Sealing both publishers guarantees no request starts after close() resolves.
+          await Promise.all([publisher.close(), snapshots.close()]);
         } catch {
           // Publisher lifecycle is fail-open too.
         }

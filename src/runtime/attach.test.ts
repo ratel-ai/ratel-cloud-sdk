@@ -454,6 +454,54 @@ describe("attach", () => {
     expect(delivered).toEqual([{ ...EVENT, event_id: "native-queued" }]);
   });
 
+  it("sends nothing to Cloud after close() resolves", async () => {
+    vi.useFakeTimers();
+    const posts: string[] = [];
+    let emitDuringPost: (() => void) | undefined;
+    let handler: ((batch: readonly RuntimeEvent[]) => void | PromiseLike<void>) | undefined;
+    const runtime = {
+      events: {
+        sourceId: "service-a",
+        subscribe: (next: typeof handler) => {
+          handler = next;
+          return {
+            droppedCount: 0,
+            flush: async () => {},
+            unsubscribe: () => {
+              // The native drain contract keeps delivering envelopes already queued.
+            },
+          };
+        },
+      },
+      catalog: { snapshot: () => ({ source_id: "service-a", tools: [], skills: [] }) },
+    } satisfies RatelRuntime;
+    try {
+      const handle = attach(runtime, {
+        apiKey: "rtl_test",
+        fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).endsWith("/events")) {
+            posts.push(String(init?.body));
+            emitDuringPost?.();
+            emitDuringPost = undefined;
+          }
+          return Response.json({}, { status: 202 });
+        }) as typeof fetch,
+      });
+      emitDuringPost = () => handler?.([{ ...EVENT, event_id: "during-close" }]);
+      handler?.([{ ...EVENT, event_id: "before-close" }]);
+
+      await handle.close();
+      const postsWhenClosed = posts.length;
+      handler?.([{ ...EVENT, event_id: "after-close" }]);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(posts.length).toBe(postsWhenClosed);
+      expect(handle.status().events.dropped).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fails open when the SDK event subscription cannot be created", async () => {
     const runtime = {
       events: {
