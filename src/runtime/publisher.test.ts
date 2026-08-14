@@ -92,6 +92,31 @@ describe("RuntimeEventsPublisher", () => {
     ).toHaveLength(70);
   });
 
+  it("serializes each event once for size accounting and batch assembly", async () => {
+    let serializations = 0;
+    let body = "";
+    const publisher = new RuntimeEventsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        body = String(init?.body);
+        return Response.json({ accepted: 1, duplicates: 0, rejected: [] }, { status: 202 });
+      }) as typeof fetch,
+    });
+    const event = {
+      ...EVENT,
+      toJSON: () => {
+        serializations += 1;
+        return EVENT;
+      },
+    };
+
+    publisher.publish(event);
+    await publisher.flush();
+
+    expect(serializations).toBe(1);
+    expect((JSON.parse(body) as { events: RuntimeEvent[] }).events).toEqual([EVENT]);
+  });
+
   it("surfaces partial-success rejections without retrying them", async () => {
     let requests = 0;
     const rejected: Array<{ eventId: string | null; reason: string }> = [];
