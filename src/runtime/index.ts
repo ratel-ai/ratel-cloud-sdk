@@ -6,6 +6,11 @@ export type {
   RuntimeEvent,
 } from "../types.js";
 export {
+  isRemotelyPublishable,
+  RUNTIME_EVENT_TYPES,
+  type RuntimeEventType,
+} from "./allowlist.js";
+export {
   type AttachOptions,
   attach,
   type RatelRuntime,

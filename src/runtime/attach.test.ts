@@ -220,6 +220,28 @@ describe("attach", () => {
     );
   });
 
+  it("forwards only remotely publishable event types to Cloud", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          delivered.push(...(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] }).events);
+        }
+        return Response.json({}, { status: 202 });
+      }) as typeof fetch,
+    });
+
+    runtime.emit({ ...EVENT, event_id: "allowed", type: "invoke_start" });
+    runtime.emit({ ...EVENT, event_id: "local-paths", type: "embedder_load" });
+    runtime.emit({ ...EVENT, event_id: "local-search", type: "fact_search" });
+    await handle.flush();
+    await handle.close();
+
+    expect(delivered.map((event) => event.event_id)).toEqual(["allowed"]);
+  });
+
   it("publishes the latest complete catalog on attach and registration churn", async () => {
     const snapshots: unknown[] = [];
     const runtime = new FakeRuntime();

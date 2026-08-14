@@ -1,4 +1,5 @@
 import type { RuntimeCatalogToolDefinition, RuntimeEvent } from "../types.js";
+import { isRemotelyPublishable } from "./allowlist.js";
 import {
   classifyDelivery,
   type DeliveryResult,
@@ -171,6 +172,8 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
   };
   const subscription = runtime.events.subscribe((batch) => {
     for (const event of batch) {
+      // Non-allowlisted types can carry local-only detail and never leave the process.
+      if (!isRemotelyPublishable(event.type)) continue;
       publisher.publish(event.source_id === sourceId ? event : { ...event, source_id: sourceId });
     }
     if (batch.some((event) => event.type === "index_churn")) markSnapshotDirty();
