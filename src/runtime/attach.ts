@@ -1,4 +1,10 @@
 import type { RuntimeCatalogToolDefinition, RuntimeEvent } from "../types.js";
+import {
+  classifyDelivery,
+  type DeliveryResult,
+  DeliveryStatus,
+  type RuntimeDeliveryStatus,
+} from "./delivery-status.js";
 import { RuntimeEventsPublisher, type RuntimeEventsPublisherOptions } from "./publisher.js";
 import { nonNegative } from "./retry.js";
 import { CatalogSnapshotsPublisher } from "./snapshots.js";
@@ -40,7 +46,8 @@ export interface RatelRuntime {
   readonly catalog: RatelRuntimeCatalog;
 }
 
-export interface AttachOptions extends Omit<RuntimeEventsPublisherOptions, "apiKey"> {
+export interface AttachOptions
+  extends Omit<RuntimeEventsPublisherOptions, "apiKey" | "deliveryStatus"> {
   /** Project API key. Defaults to `RATEL_API_KEY`. */
   readonly apiKey?: string;
   /** Stable deployment source. Defaults to the Ratel runtime's OTel-derived source id. */
@@ -49,9 +56,17 @@ export interface AttachOptions extends Omit<RuntimeEventsPublisherOptions, "apiK
   readonly snapshotDebounceMs?: number;
   /** Maximum age of a durable catalog confirmation. Defaults to 5 minutes. */
   readonly snapshotReconcileIntervalMs?: number;
+  /** Called only when a publisher's delivery outcome kind changes. */
+  readonly onStatusChange?: (status: RuntimeDeliveryStatus) => void;
+  /** Emit one warning per failing kind until it recovers. Defaults to true. */
+  readonly warnOnFailure?: boolean;
 }
 
 export interface RuntimeAttachment {
+  /** Current JSON-serializable delivery health. */
+  status(): RuntimeDeliveryStatus;
+  /** Probe event ingestion without mutating publisher queues. */
+  verify(): Promise<DeliveryResult>;
   /** Deliver runtime work already accepted by this process. */
   flush(): Promise<void>;
   /** Stop accepting runtime work and deliver everything already accepted. */
@@ -60,10 +75,23 @@ export interface RuntimeAttachment {
 
 const ATTACHMENTS = new WeakMap<object, RuntimeAttachment>();
 const NOOP_ATTACHMENT: RuntimeAttachment = {
+  status: () => ({
+    overall: "degraded",
+    events: {
+      lastOutcome: classifyDelivery(undefined),
+      lastAcceptedAt: null,
+      lastAttemptAt: null,
+      lastError: "runtime attachment could not be created",
+      accepted: 0,
+      rejected: 0,
+      dropped: 0,
+    },
+    snapshots: {},
+  }),
+  verify: async () => classifyDelivery(undefined),
   flush: async () => {},
   close: async () => {},
 };
-let missingApiKeyWarned = false;
 
 /** Subscribe one Ratel runtime to fail-open Cloud delivery. */
 export function attach(runtime: RatelRuntime, options: AttachOptions = {}): RuntimeAttachment {
@@ -83,10 +111,17 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     sourceId = runtime.events.sourceId,
     snapshotDebounceMs,
     snapshotReconcileIntervalMs,
+    onStatusChange,
+    warnOnFailure,
     ...delivery
   } = options;
-  warnIfMissingApiKey(apiKey);
-  const publisher = new RuntimeEventsPublisher({ ...delivery, apiKey });
+  const enabled = process.env.RATEL_CLOUD_EVENTS?.trim().toLowerCase() !== "off";
+  const deliveryStatus = new DeliveryStatus({
+    enabled,
+    ...(onStatusChange === undefined ? {} : { onStatusChange }),
+    ...(warnOnFailure === undefined ? {} : { warnOnFailure }),
+  });
+  const publisher = new RuntimeEventsPublisher({ ...delivery, apiKey, deliveryStatus });
   const snapshots = new CatalogSnapshotsPublisher({
     apiKey,
     ...(delivery.baseUrl === undefined ? {} : { baseUrl: delivery.baseUrl }),
@@ -99,6 +134,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     ...(delivery.retry === undefined ? {} : { retry: delivery.retry }),
     ...(delivery.sleep === undefined ? {} : { sleep: delivery.sleep }),
     ...(delivery.onRejected === undefined ? {} : { onRejected: delivery.onRejected }),
+    deliveryStatus,
   });
   const publishSnapshot = (): void => {
     try {
@@ -159,6 +195,8 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     await flushPublishers();
   };
   const handle: RuntimeAttachment = {
+    status: () => deliveryStatus.snapshot(),
+    verify: () => publisher.verify(),
     flush,
     close: () => {
       closePromise ??= (async () => {
@@ -180,18 +218,6 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
   };
   ATTACHMENTS.set(runtime, handle);
   return handle;
-}
-
-function warnIfMissingApiKey(apiKey: string): void {
-  if (missingApiKeyWarned || apiKey.trim() !== "") return;
-  missingApiKeyWarned = true;
-  try {
-    console.warn(
-      "[ratel-cloud-sdk/runtime] RATEL_API_KEY is missing; runtime delivery will fail authentication.",
-    );
-  } catch {
-    // Diagnostics remain fail-open too.
-  }
 }
 
 function toCatalogTool(tool: RatelRuntimeCatalogToolDefinition): RuntimeCatalogToolDefinition {

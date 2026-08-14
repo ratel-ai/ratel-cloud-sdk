@@ -38,6 +38,7 @@ describe("RuntimeEventsPublisher", () => {
         "content-type": "application/json",
       },
       body: JSON.stringify({ events: [EVENT] }),
+      redirect: "manual",
     });
   });
 

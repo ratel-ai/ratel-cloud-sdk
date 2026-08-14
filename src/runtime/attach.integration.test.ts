@@ -25,6 +25,7 @@ describe("runtime attach with local Ratel Cloud", () => {
         snapshotLanded: true,
         oversizedEventDropped: true,
         otlpDeduplicated: true,
+        deliveryStatus: { overall: "ok" },
       });
     },
     120_000,

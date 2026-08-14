@@ -12,6 +12,193 @@ const EVENT: RuntimeEvent = {
 };
 
 describe("attach", () => {
+  it.each([
+    [302, "gated"],
+    [401, "auth"],
+    [404, "not_deployed"],
+    [429, "rate_limited"],
+  ] as const)(
+    "classifies verify HTTP %i as %s without following redirects",
+    async (status, kind) => {
+      const requests: RequestInit[] = [];
+      const handle = attach(new FakeRuntime(), {
+        apiKey: "rtl_test",
+        fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+          requests.push(init ?? {});
+          return new Response(null, { status });
+        }) as typeof fetch,
+        retry: { maxAttempts: status === 302 ? 3 : 1 },
+        warnOnFailure: false,
+      });
+
+      await expect(handle.verify()).resolves.toMatchObject({ kind, status });
+      expect(requests).toEqual([
+        expect.objectContaining({
+          method: "POST",
+          body: '{"events":[]}',
+          redirect: "manual",
+        }),
+      ]);
+    },
+  );
+
+  it("transitions status from ok to blocked and back to ok", async () => {
+    const eventStatuses = [202, 302, 202];
+    const handle = attach(new FakeRuntime(), {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL) =>
+        String(input).endsWith("/events")
+          ? new Response(null, { status: eventStatuses.shift() ?? 500 })
+          : Response.json({}, { status: 200 })) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      warnOnFailure: false,
+    });
+    await handle.flush();
+
+    await handle.verify();
+    expect(handle.status().overall).toBe("ok");
+    await handle.verify();
+    expect(handle.status().overall).toBe("blocked");
+    await handle.verify();
+    expect(handle.status().overall).toBe("ok");
+  });
+
+  it("tracks event counters and per-source snapshot durability", async () => {
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      queueCapacity: 1,
+      warnOnFailure: false,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          const body = JSON.parse(String(init?.body)) as { events: RuntimeEvent[] };
+          return Response.json(
+            { accepted: body.events.length, duplicates: 0, rejected: [] },
+            { status: 202 },
+          );
+        }
+        return Response.json({}, { status: 200 });
+      }) as typeof fetch,
+    });
+
+    runtime.emit({ ...EVENT, event_id: "dropped" });
+    runtime.emit({ ...EVENT, event_id: "kept" });
+    await handle.flush();
+
+    expect(handle.status()).toMatchObject({
+      overall: "ok",
+      events: {
+        lastOutcome: { kind: "ok", status: 202 },
+        lastAcceptedAt: expect.any(Number),
+        lastAttemptAt: expect.any(Number),
+        lastError: null,
+        accepted: 2,
+        rejected: 0,
+        dropped: 1,
+      },
+      snapshots: {
+        "service-a": {
+          lastDurableAt: expect.any(Number),
+          pendingSince: null,
+          lastOutcome: { kind: "ok", status: 200 },
+        },
+      },
+    });
+    expect(() => JSON.stringify(handle.status())).not.toThrow();
+  });
+
+  it("classifies partial event acceptance as a payload rejection", async () => {
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      warnOnFailure: false,
+      fetch: (async (input: RequestInfo | URL) =>
+        String(input).endsWith("/events")
+          ? Response.json(
+              {
+                accepted: 0,
+                duplicates: 0,
+                rejected: [{ event_id: EVENT.event_id, reason: "invalid event" }],
+              },
+              { status: 202 },
+            )
+          : Response.json({}, { status: 200 })) as typeof fetch,
+    });
+    runtime.emit(EVENT);
+
+    await handle.flush();
+
+    expect(handle.status()).toMatchObject({
+      overall: "degraded",
+      events: {
+        lastOutcome: { kind: "rejected_payload", status: 202 },
+        accepted: 0,
+        rejected: 1,
+      },
+    });
+  });
+
+  it("invokes status callbacks only when an outcome kind changes", async () => {
+    const kinds: Array<string | null> = [];
+    const statuses = [401, 401, 202];
+    const handle = attach(new FakeRuntime(), {
+      apiKey: "rtl_test",
+      warnOnFailure: false,
+      onStatusChange: (status) => kinds.push(status.events.lastOutcome?.kind ?? null),
+      fetch: (async (input: RequestInfo | URL) =>
+        String(input).endsWith("/events")
+          ? new Response(null, { status: statuses.shift() ?? 202 })
+          : Response.json({}, { status: 200 })) as typeof fetch,
+      retry: { maxAttempts: 1 },
+    });
+    await handle.flush();
+
+    await handle.verify();
+    await handle.verify();
+    await handle.verify();
+
+    expect(kinds).toEqual([null, "auth", "ok"]);
+  });
+
+  it("warns once per failing kind until delivery recovers", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const statuses = [401, 401, 404, 404, 202, 401];
+    try {
+      const handle = attach(new FakeRuntime(), {
+        apiKey: "rtl_test",
+        fetch: (async (input: RequestInfo | URL) =>
+          String(input).endsWith("/events")
+            ? new Response(null, { status: statuses.shift() ?? 202 })
+            : Response.json({}, { status: 200 })) as typeof fetch,
+        retry: { maxAttempts: 1 },
+      });
+      await handle.flush();
+
+      for (let index = 0; index < 6; index += 1) await handle.verify();
+
+      expect(warn.mock.calls.map(([message]) => message)).toEqual([
+        "[ratel-cloud-sdk/runtime] auth: authentication failed — facts are not persisting",
+        "[ratel-cloud-sdk/runtime] not_deployed: the runtime ingestion endpoint is not deployed — facts are not persisting",
+        "[ratel-cloud-sdk/runtime] auth: authentication failed — facts are not persisting",
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reports disabled when RATEL_CLOUD_EVENTS is off", () => {
+    const previous = process.env.RATEL_CLOUD_EVENTS;
+    process.env.RATEL_CLOUD_EVENTS = "off";
+    try {
+      const handle = attach(new FakeRuntime(), { apiKey: "rtl_test", warnOnFailure: false });
+
+      expect(handle.status().overall).toBe("disabled");
+    } finally {
+      if (previous === undefined) delete process.env.RATEL_CLOUD_EVENTS;
+      else process.env.RATEL_CLOUD_EVENTS = previous;
+    }
+  });
+
   it("streams subscribed SDK runtime events to Cloud", async () => {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     const runtime = new FakeRuntime();
@@ -287,18 +474,23 @@ describe("attach", () => {
     await expect(handle.close()).resolves.toBeUndefined();
   });
 
-  it("warns once when runtime delivery has no API key", async () => {
+  it("suppresses runtime delivery warnings when requested", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fetchImpl = (async () => Response.json({}, { status: 401 })) as typeof fetch;
     try {
-      const first = attach(new FakeRuntime(), { apiKey: "", fetch: fetchImpl });
-      const second = attach(new FakeRuntime(), { apiKey: "", fetch: fetchImpl });
+      const first = attach(new FakeRuntime(), {
+        apiKey: "",
+        fetch: fetchImpl,
+        warnOnFailure: false,
+      });
+      const second = attach(new FakeRuntime(), {
+        apiKey: "",
+        fetch: fetchImpl,
+        warnOnFailure: false,
+      });
       await Promise.all([first.close(), second.close()]);
 
-      expect(warn).toHaveBeenCalledOnce();
-      expect(warn).toHaveBeenCalledWith(
-        "[ratel-cloud-sdk/runtime] RATEL_API_KEY is missing; runtime delivery will fail authentication.",
-      );
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }

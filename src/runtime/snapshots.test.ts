@@ -56,6 +56,7 @@ describe("CatalogSnapshotsPublisher", () => {
           },
         ],
       }),
+      redirect: "manual",
     });
     expect(String(requests[0]?.init?.body)).not.toMatch(
       /execute|secret-key|secret-token|private-skill|secret instructions/,

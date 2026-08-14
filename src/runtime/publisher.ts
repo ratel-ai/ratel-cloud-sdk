@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { DEFAULT_BASE_URL, DEFAULT_TIMEOUT_MS } from "../transport.js";
 import type { RuntimeEvent } from "../types.js";
+import { classifyDelivery, type DeliveryResult, DeliveryStatus } from "./delivery-status.js";
 import {
   createRetryConfig,
   nonNegative,
@@ -27,6 +28,11 @@ interface SerializedBatch {
 
 interface BatchBuildResult {
   readonly batches: SerializedBatch[];
+  readonly rejected: RuntimeEventRejection[];
+}
+
+interface EventDeliveryReport {
+  readonly accepted: number;
   readonly rejected: RuntimeEventRejection[];
 }
 
@@ -66,6 +72,8 @@ export interface RuntimeEventsPublisherOptions {
   retry?: RuntimeEventsRetryOptions;
   /** Injectable timer for runtimes and deterministic tests. */
   sleep?: (ms: number) => PromiseLike<void>;
+  /** Shared delivery health tracker. */
+  deliveryStatus?: DeliveryStatus;
 }
 
 /** Fail-open, in-memory delivery of runtime event envelopes to Ratel Cloud. */
@@ -80,6 +88,7 @@ export class RuntimeEventsPublisher {
   readonly #enabled: boolean;
   readonly #queueCapacity: number;
   readonly #flushIntervalMs: number;
+  readonly #deliveryStatus: DeliveryStatus;
   readonly #queue: RuntimeEvent[] = [];
   readonly #dropWindows = new Map<string, Map<string, DropWindow>>();
   #dropWindowCount = 0;
@@ -98,6 +107,9 @@ export class RuntimeEventsPublisher {
     this.#enabled = process.env.RATEL_CLOUD_EVENTS?.trim().toLowerCase() !== "off";
     this.#queueCapacity = positiveInteger(options.queueCapacity, 1_024);
     this.#flushIntervalMs = nonNegative(options.flushIntervalMs, DEFAULT_FLUSH_INTERVAL_MS);
+    this.#deliveryStatus =
+      options.deliveryStatus ??
+      new DeliveryStatus({ enabled: this.#enabled, warnOnFailure: false });
   }
 
   publish(event: RuntimeEvent): void {
@@ -124,6 +136,20 @@ export class RuntimeEventsPublisher {
     await drain;
   }
 
+  /** Probe event ingestion with an empty batch without mutating the queue. */
+  async verify(): Promise<DeliveryResult> {
+    try {
+      const response = await this.#request('{"events":[]}');
+      const result = classifyDelivery(response);
+      this.#deliveryStatus.recordEvents(result);
+      return result;
+    } catch {
+      const result = classifyDelivery(undefined);
+      this.#deliveryStatus.recordEvents(result);
+      return result;
+    }
+  }
+
   async #drainQueued(): Promise<void> {
     try {
       const events = this.#queue.splice(0);
@@ -135,6 +161,7 @@ export class RuntimeEventsPublisher {
       this.#overflowDropWindow = undefined;
       events.push(...dropWindows.map(droppedEvent));
       const built = createBatches(events);
+      this.#deliveryStatus.recordEventRejections(built.rejected.length);
       this.#surfaceRejections(built.rejected);
       for (const batch of built.batches) {
         await this.#sendBatch(batch);
@@ -160,24 +187,26 @@ export class RuntimeEventsPublisher {
   }
 
   async #sendBatch(batch: SerializedBatch): Promise<void> {
-    const response = await requestWithRetry(
-      () =>
-        this.#fetch(`${this.#baseUrl}/events`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${this.#apiKey}`,
-            "content-type": "application/json",
-          },
-          body: batch.body,
-          signal: AbortSignal.timeout(this.#timeoutMs),
-        }),
-      this.#retry,
-      this.#sleep,
-    );
+    const response = await this.#request(batch.body);
+    const result = classifyDelivery(response);
     if (response?.ok) {
-      this.#surfaceRejections(await readRejections(response));
+      const report = await readDeliveryReport(response, batch.eventIds.length);
+      const outcome: DeliveryResult =
+        report.rejected.length === 0
+          ? result
+          : {
+              kind: "rejected_payload",
+              status: response.status,
+              message: `${report.rejected.length} event payloads were rejected`,
+            };
+      this.#deliveryStatus.recordEvents(outcome, {
+        accepted: report.accepted,
+        rejected: report.rejected.length,
+      });
+      this.#surfaceRejections(report.rejected);
       return;
     }
+    this.#deliveryStatus.recordEvents(result, { rejected: batch.eventIds.length });
     this.#surfaceRejections(
       batch.eventIds.map((eventId) => ({
         eventId,
@@ -185,6 +214,24 @@ export class RuntimeEventsPublisher {
           ? `batch rejected with HTTP ${response.status}`
           : "batch delivery failed after retries",
       })),
+    );
+  }
+
+  async #request(body: string): Promise<Response | undefined> {
+    return requestWithRetry(
+      () =>
+        this.#fetch(`${this.#baseUrl}/events`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.#apiKey}`,
+            "content-type": "application/json",
+          },
+          body,
+          redirect: "manual",
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        }),
+      this.#retry,
+      this.#sleep,
     );
   }
 
@@ -198,6 +245,7 @@ export class RuntimeEventsPublisher {
   }
 
   #recordDrop(event: RuntimeEvent): void {
+    this.#deliveryStatus.recordEventDrops(1);
     const timestamp = Number.isFinite(event.ts) ? event.ts : Date.now();
     const bySession = this.#dropWindows.get(event.source_id);
     const dropWindow = bySession?.get(event.session_id);
@@ -294,15 +342,20 @@ function safeEventId(event: RuntimeEvent): string | null {
   }
 }
 
-async function readRejections(response: Response): Promise<RuntimeEventRejection[]> {
+async function readDeliveryReport(
+  response: Response,
+  batchSize: number,
+): Promise<EventDeliveryReport> {
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return [];
+    return { accepted: batchSize, rejected: [] };
   }
-  if (!isRecord(body) || !Array.isArray(body.rejected)) return [];
-  return body.rejected
+  if (!isRecord(body) || !Array.isArray(body.rejected)) {
+    return { accepted: batchSize, rejected: [] };
+  }
+  const rejected = body.rejected
     .filter(
       (item): item is Record<string, unknown> => isRecord(item) && typeof item.reason === "string",
     )
@@ -310,6 +363,18 @@ async function readRejections(response: Response): Promise<RuntimeEventRejection
       eventId: typeof item.event_id === "string" ? item.event_id : null,
       reason: item.reason as string,
     }));
+  const reportedAccepted = nonNegativeCount(body.accepted) + nonNegativeCount(body.duplicates);
+  return {
+    accepted:
+      typeof body.accepted === "number" || typeof body.duplicates === "number"
+        ? reportedAccepted
+        : Math.max(0, batchSize - rejected.length),
+    rejected,
+  };
+}
+
+function nonNegativeCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

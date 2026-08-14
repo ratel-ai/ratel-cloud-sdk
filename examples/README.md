@@ -39,7 +39,7 @@ deletes the organization and all cascaded test data.
 The acceptance covers all cross-repository paths: runtime facts in `trace_events`, the tool in
 the synced catalog read model, an oversized event in the metadata-only Dropped ledger, and an
 OTLP search span arriving alongside the direct fact without double-counting its
-`ratel.event.id`.
+`ratel.event.id`. Its final JSON summary also prints the attachment's `deliveryStatus` snapshot.
 
 Prerequisites:
 

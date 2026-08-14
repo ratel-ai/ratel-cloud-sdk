@@ -93,7 +93,7 @@ try {
   assert(summary.snapshotLanded, "catalog snapshot did not land in the catalog read model");
   assert(summary.oversizedEventDropped, "oversized event did not reach the Dropped ledger");
   assert(summary.otlpDeduplicated, "direct and OTLP search projections were double-counted");
-  console.log(JSON.stringify(summary));
+  console.log(JSON.stringify({ ...summary, deliveryStatus: attachment.status() }));
 } catch (error) {
   failure = error;
 } finally {

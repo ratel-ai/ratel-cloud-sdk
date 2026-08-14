@@ -2,6 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRetryConfig, requestWithRetry, sleep } from "./retry.js";
 
 describe("requestWithRetry", () => {
+  it("returns redirects without retrying", async () => {
+    const request = vi.fn(async () => new Response(null, { status: 302 }));
+
+    const response = await requestWithRetry(
+      request,
+      createRetryConfig({ maxAttempts: 3 }),
+      async () => {},
+    );
+
+    expect(response?.status).toBe(302);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("applies injected full jitter after clamping exponential backoff", async () => {
     const sleeps: number[] = [];
     const random = vi.fn(() => 0.5);

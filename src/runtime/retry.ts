@@ -26,7 +26,7 @@ export async function requestWithRetry(
     let retryAfterMs: number | undefined;
     try {
       response = await request();
-      if (response.ok || !isRetryableStatus(response.status)) return response;
+      if (response.ok || isTerminalStatus(response.status)) return response;
       retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
     } catch {
       // Network and timeout failures are retryable; exhaustion remains fail-open.
@@ -74,6 +74,10 @@ export function sleep(ms: number): Promise<void> {
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
+}
+
+function isTerminalStatus(status: number): boolean {
+  return (status >= 300 && status < 400) || !isRetryableStatus(status);
 }
 
 function fullJitter(delayMs: number, random: () => number): number {

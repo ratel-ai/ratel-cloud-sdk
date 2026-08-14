@@ -1,5 +1,6 @@
 import { DEFAULT_BASE_URL, DEFAULT_TIMEOUT_MS } from "../transport.js";
 import type { RuntimeCatalogSnapshot, RuntimeCatalogToolDefinition } from "../types.js";
+import { classifyDelivery, DeliveryStatus } from "./delivery-status.js";
 import { hashCatalogSnapshot } from "./hash.js";
 import type { RuntimeEventRejection, RuntimeEventsRetryOptions } from "./publisher.js";
 import {
@@ -56,6 +57,8 @@ export interface CatalogSnapshotsPublisherOptions {
   readonly onRejected?: (rejected: readonly RuntimeEventRejection[]) => void;
   /** Injectable timer for runtimes and deterministic tests. */
   readonly sleep?: (ms: number) => PromiseLike<void>;
+  /** Shared delivery health tracker. */
+  readonly deliveryStatus?: DeliveryStatus;
 }
 
 /** Fail-open publication of complete runtime catalog snapshots to Ratel Cloud. */
@@ -69,6 +72,7 @@ export class CatalogSnapshotsPublisher {
   readonly #retry: RetryConfig;
   readonly #sleep: (ms: number) => PromiseLike<void>;
   readonly #onRejected: ((rejected: readonly RuntimeEventRejection[]) => void) | undefined;
+  readonly #deliveryStatus: DeliveryStatus;
   readonly #acknowledgedHashes = new Map<string, string>();
   readonly #reconcileAt = new Map<string, number>();
   readonly #inFlightHashes = new Map<string, string>();
@@ -92,15 +96,24 @@ export class CatalogSnapshotsPublisher {
     this.#retry = createRetryConfig(options.retry);
     this.#sleep = options.sleep ?? sleep;
     this.#onRejected = options.onRejected;
+    this.#deliveryStatus = options.deliveryStatus ?? new DeliveryStatus({ warnOnFailure: false });
   }
 
   publish(snapshot: RuntimeCatalogSnapshot): void {
     if (this.#closed) return;
     try {
       const prepared = prepareSnapshot(snapshot);
+      const sourceId = prepared.snapshot.source_id;
+      if (prepared.rejected.length > 0) {
+        this.#deliveryStatus.recordSnapshotPending(sourceId);
+        this.#deliveryStatus.recordSnapshot(sourceId, {
+          kind: "rejected_payload",
+          status: null,
+          message: `${prepared.rejected.length} catalog tools were rejected`,
+        });
+      }
       this.#surfaceRejections(prepared.rejected);
       const hash = hashCatalogSnapshot(prepared.snapshot);
-      const sourceId = prepared.snapshot.source_id;
       const next = {
         body: prepared.body,
         hash,
@@ -112,21 +125,30 @@ export class CatalogSnapshotsPublisher {
         this.#rescheduleReconcile();
       }
       const inFlightHash = this.#inFlightHashes.get(sourceId);
-      if (
-        hash === inFlightHash ||
-        (hash === this.#acknowledgedHashes.get(sourceId) && inFlightHash === undefined)
-      ) {
+      const isDurable = hash === this.#acknowledgedHashes.get(sourceId);
+      if (hash === inFlightHash || (isDurable && inFlightHash === undefined)) {
         this.#pending.delete(sourceId);
         if (this.#pending.size === 0) this.#clearFlushTimer();
+        if (isDurable && inFlightHash === undefined) {
+          this.#deliveryStatus.recordSnapshotSettled(sourceId);
+        }
         return;
       }
+      this.#deliveryStatus.recordSnapshotPending(sourceId);
       this.#pending.set(sourceId, next);
       this.#scheduleFlush();
     } catch (error) {
+      const sourceId = safeSourceId(snapshot);
+      this.#deliveryStatus.recordSnapshotPending(sourceId);
+      this.#deliveryStatus.recordSnapshot(sourceId, {
+        kind: "rejected_payload",
+        status: null,
+        message: `catalog snapshot cannot be prepared: ${errorMessage(error)}`,
+      });
       this.#surfaceRejections([
         {
           eventId: null,
-          reason: `catalog snapshot for ${safeSourceId(snapshot)} cannot be prepared: ${errorMessage(error)}`,
+          reason: `catalog snapshot for ${sourceId} cannot be prepared: ${errorMessage(error)}`,
         },
       ]);
     }
@@ -162,7 +184,9 @@ export class CatalogSnapshotsPublisher {
         this.#inFlightHashes.set(sourceId, pending.hash);
         try {
           const response = await this.#send(pending.body);
+          const delivery = classifyDelivery(response);
           if (response === undefined) {
+            this.#deliveryStatus.recordSnapshot(sourceId, delivery);
             this.#surfaceRejections([
               {
                 eventId: null,
@@ -175,13 +199,18 @@ export class CatalogSnapshotsPublisher {
           }
           const outcome = await readPublishOutcome(response);
           if (outcome === "durable") {
+            const settled =
+              this.#latest.get(sourceId)?.hash === pending.hash && !this.#pending.has(sourceId);
+            this.#deliveryStatus.recordSnapshotDurable(sourceId, delivery, settled);
             this.#acknowledgedHashes.set(sourceId, pending.hash);
             const acknowledgedAt = Date.now();
             this.#reconcileAt.set(sourceId, acknowledgedAt + this.#reconcileIntervalMs);
             this.#rescheduleReconcile();
           } else if (outcome === "deferred") {
+            this.#deliveryStatus.recordSnapshot(sourceId, delivery);
             this.#restoreLatest(retryPending, pending);
           } else if (outcome === "failed") {
+            this.#deliveryStatus.recordSnapshot(sourceId, delivery);
             this.#surfaceRejections([
               {
                 eventId: null,
@@ -192,6 +221,7 @@ export class CatalogSnapshotsPublisher {
             retryWithBackoff = true;
           }
         } catch (error) {
+          this.#deliveryStatus.recordSnapshot(sourceId, classifyDelivery(undefined));
           this.#surfaceRejections([
             {
               eventId: null,
@@ -235,6 +265,7 @@ export class CatalogSnapshotsPublisher {
           method: "PUT",
           headers,
           body,
+          redirect: "manual",
           signal: AbortSignal.timeout(this.#timeoutMs),
         });
       },

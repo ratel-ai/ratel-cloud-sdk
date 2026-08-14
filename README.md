@@ -98,6 +98,39 @@ tools omitted by client-side snapshot limits. Snapshot publication matches Cloud
 tools and a 4,000,000-byte body; IDs/names are trimmed to 512 characters and descriptions to
 16,384 characters. A degraded `202 { synced: false }` remains pending for a later retry.
 
+### Runtime delivery observability
+
+The attachment exposes synchronous, JSON-serializable delivery health and an explicit preflight:
+
+```ts
+const result = await cloudRuntime.verify(); // POSTs { events: [] }; queues are untouched
+console.log(result);                        // { kind, status, message }
+console.log(cloudRuntime.status());         // { overall, events, snapshots }
+```
+
+`result.kind` and each last outcome are `ok`, `auth` (401), `gated` (3xx), `not_deployed`
+(404), `rate_limited` (429), `rejected_payload`, or `network`. Bearer-authenticated runtime
+requests never follow redirects, so a fronting auth gate remains visible as `gated`.
+
+`status().overall` is `pending` before confirmation, `blocked` for authentication, auth-gate, or
+missing-endpoint failures, `degraded` for rate limits, payload rejects, or network failures, and
+`ok` after current work is durable. It is `disabled` when `RATEL_CLOUD_EVENTS=off`. Event status
+includes Unix-millisecond attempt/accept timestamps, the last error, and cumulative accepted,
+rejected, and queue-dropped counters. Snapshot status is keyed by source id and includes
+`lastDurableAt`, `pendingSince`, and `lastOutcome`.
+
+By default, the first transition into each failing kind logs one warning; repeats stay quiet until
+that kind recovers. Use `warnOnFailure: false` to disable these warnings, or observe transitions
+without polling:
+
+```ts
+ratelCloud.attach(runtime, {
+  onStatusChange: (status) => healthGauge.set(status.overall),
+});
+```
+
+Status callbacks and diagnostics are fail-open: exceptions never escape into the agent.
+
 The cross-repository live acceptance test is opt-in with `RATEL_E2E=1`; see the
 [runtime attach E2E example](./examples/README.md#runtime-attach-e2emjs--live-runtime-attach-acceptance).
 
