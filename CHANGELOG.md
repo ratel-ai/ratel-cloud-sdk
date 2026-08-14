@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0 - 2026-08-15
+
+### Added
+
+- **`@ratel-ai/cloud-sdk/runtime` — one-line runtime facts delivery.** `attach(runtime)` subscribes a
+  Ratel SDK runtime (`@ratel-ai/sdk` >= 0.10.0, declared as an optional peer) to fail-open Cloud
+  delivery: batched envelope-v2 runtime events to `POST /api/v1/events` and canonically hashed,
+  debounced catalog snapshots to `PUT /api/v1/catalog/snapshot`, with a `flush()`/`close()`
+  lifecycle. Only the frozen remotely publishable v1 event set (ADR-0020, exported as
+  `RUNTIME_EVENT_TYPES` with `isRemotelyPublishable`) leaves the process; the `sourceId` is
+  normalized once and stamped on both lanes. Delivery never throws into the host: against an SDK
+  without runtime events, `attach()` warns once and returns a no-op handle; `RATEL_CLOUD_EVENTS=off`
+  disables event delivery (catalog snapshots remain enabled). `close()` guarantees no request starts
+  after it resolves, and explicitly awaited `flush()`/`close()` calls keep the event loop alive
+  across retry delays while background drains stay unreferenced. `DeliveryStatus` exposes
+  accepted/rejected/dropped introspection for both lanes. Building blocks are exported for direct
+  use: `RuntimeEventsPublisher`, `CatalogSnapshotsPublisher`, `hashCatalogSnapshot`, and the batch
+  caps (`RUNTIME_EVENT_BATCH_MAX_BYTES`, `RUNTIME_EVENT_BATCH_MAX_EVENTS`, `RUNTIME_EVENT_MAX_BYTES`).
+- **Deferred delivery instead of silent loss during rollout.** While Cloud's runtime-events ingest
+  flag is off, event batches acknowledged with the explicit `deferred: true` field are requeued
+  within queue bounds and retried on a slow cadence (30s floor, doubling to a 5 min cap, resetting
+  on success); catalog snapshots deferred with `202 {synced:false}` retry on the same discipline,
+  and deterministic 4xx rejections surface once instead of retrying forever. Against an older Cloud
+  without the `deferred` field, event delivery keeps the previous best-effort behavior.
+
 ## 0.3.0 - 2026-07-30
 
 ### Added
