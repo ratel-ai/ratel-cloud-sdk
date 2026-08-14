@@ -198,7 +198,7 @@ describe("RuntimeEventsPublisher", () => {
     expect(sleeps).toEqual([100, 200]);
   });
 
-  it("honors Retry-After on rate limits", async () => {
+  it("clamps Retry-After on rate limits to the configured maximum", async () => {
     const sleeps: number[] = [];
     let requests = 0;
     const fetchImpl = (async () => {
@@ -214,7 +214,7 @@ describe("RuntimeEventsPublisher", () => {
     const publisher = new RuntimeEventsPublisher({
       apiKey: "rtl_test",
       fetch: fetchImpl,
-      retry: { maxAttempts: 2, initialBackoffMs: 100 },
+      retry: { maxAttempts: 2, initialBackoffMs: 100, maxBackoffMs: 1_000 },
       sleep: async (ms) => {
         sleeps.push(ms);
       },
@@ -223,7 +223,7 @@ describe("RuntimeEventsPublisher", () => {
     publisher.publish(EVENT);
     await publisher.flush();
 
-    expect(sleeps).toEqual([7_000]);
+    expect(sleeps).toEqual([1_000]);
   });
 
   it("does not enqueue or send when RATEL_CLOUD_EVENTS is off", async () => {

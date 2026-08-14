@@ -406,6 +406,38 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(requests[1]?.headers).not.toHaveProperty("if-match");
   });
 
+  it("publishes a revert when a different snapshot is still in flight", async () => {
+    const publishedToolIds: string[][] = [];
+    let resolveIntermediate: ((response: Response) => void) | undefined;
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ id: string }>;
+        };
+        publishedToolIds.push(body.tools.map(({ id }) => id));
+        if (publishedToolIds.length === 2) {
+          return await new Promise<Response>((resolve) => {
+            resolveIntermediate = resolve;
+          });
+        }
+        return Response.json({}, { headers: { ETag: `"version-${publishedToolIds.length}"` } });
+      }) as typeof fetch,
+    });
+    const acknowledged = { source_id: "worker-a", tools: [tool("one")] };
+
+    publisher.publish(acknowledged);
+    await publisher.flush();
+    publisher.publish({ source_id: "worker-a", tools: [tool("two")] });
+    const intermediateFlush = publisher.flush();
+    await vi.waitFor(() => expect(publishedToolIds).toHaveLength(2));
+    publisher.publish(acknowledged);
+    resolveIntermediate?.(Response.json({}, { headers: { ETag: '"version-2"' } }));
+    await intermediateFlush;
+
+    expect(publishedToolIds).toEqual([["one"], ["two"], ["one"]]);
+  });
+
   it("skips a queued snapshot when an identical in-flight replacement succeeds", async () => {
     let requests = 0;
     let resolveFirst: ((response: Response) => void) | undefined;

@@ -64,7 +64,8 @@ export class CatalogSnapshotsPublisher {
   readonly #retry: RetryConfig;
   readonly #sleep: (ms: number) => PromiseLike<void>;
   readonly #onRejected: ((rejected: readonly RuntimeEventRejection[]) => void) | undefined;
-  readonly #publishedHashes = new Map<string, string>();
+  readonly #acknowledgedHashes = new Map<string, string>();
+  readonly #inFlightHashes = new Map<string, string>();
   readonly #pending = new Map<string, PendingCatalogSnapshot>();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
@@ -85,15 +86,20 @@ export class CatalogSnapshotsPublisher {
       const prepared = prepareSnapshot(snapshot);
       this.#surfaceRejections(prepared.rejected);
       const hash = hashCatalogSnapshot(prepared.snapshot);
-      if (hash === this.#publishedHashes.get(prepared.snapshot.source_id)) {
-        this.#pending.delete(prepared.snapshot.source_id);
+      const sourceId = prepared.snapshot.source_id;
+      const inFlightHash = this.#inFlightHashes.get(sourceId);
+      if (
+        hash === inFlightHash ||
+        (hash === this.#acknowledgedHashes.get(sourceId) && inFlightHash === undefined)
+      ) {
+        this.#pending.delete(sourceId);
         if (this.#pending.size === 0) this.#clearTimer();
         return;
       }
-      this.#pending.set(prepared.snapshot.source_id, {
+      this.#pending.set(sourceId, {
         body: prepared.body,
         hash,
-        sourceId: prepared.snapshot.source_id,
+        sourceId,
       });
       this.#scheduleFlush();
     } catch (error) {
@@ -117,45 +123,57 @@ export class CatalogSnapshotsPublisher {
   }
 
   async #drainPending(): Promise<void> {
-    const pendingSnapshots = [...this.#pending.values()];
-    this.#pending.clear();
-    for (const pending of pendingSnapshots) {
-      try {
+    const deferred = new Map<string, PendingCatalogSnapshot>();
+    while (this.#pending.size > 0) {
+      this.#clearTimer();
+      const pendingSnapshots = [...this.#pending.values()];
+      this.#pending.clear();
+      for (const pending of pendingSnapshots) {
         const sourceId = pending.sourceId;
-        if (pending.hash === this.#publishedHashes.get(sourceId)) continue;
-        const response = await this.#send(pending.body);
-        if (response === undefined) {
+        deferred.delete(sourceId);
+        this.#inFlightHashes.set(sourceId, pending.hash);
+        try {
+          const response = await this.#send(pending.body);
+          if (response === undefined) {
+            this.#surfaceRejections([
+              {
+                eventId: null,
+                reason: `catalog snapshot for ${sourceId} failed after retries`,
+              },
+            ]);
+            continue;
+          }
+          const outcome = await readPublishOutcome(response);
+          if (outcome === "durable") {
+            this.#acknowledgedHashes.set(sourceId, pending.hash);
+          } else if (outcome === "deferred" && !this.#pending.has(sourceId)) {
+            deferred.set(sourceId, pending);
+          } else if (outcome === "failed") {
+            this.#surfaceRejections([
+              {
+                eventId: null,
+                reason: `catalog snapshot for ${sourceId} rejected with HTTP ${response.status}`,
+              },
+            ]);
+          }
+        } catch (error) {
           this.#surfaceRejections([
             {
               eventId: null,
-              reason: `catalog snapshot for ${sourceId} failed after retries`,
+              reason: `catalog snapshot for ${sourceId} failed: ${errorMessage(error)}`,
             },
           ]);
-          continue;
+        } finally {
+          if (this.#inFlightHashes.get(sourceId) === pending.hash) {
+            this.#inFlightHashes.delete(sourceId);
+          }
         }
-        const outcome = await readPublishOutcome(response);
-        if (outcome === "durable") {
-          this.#publishedHashes.set(sourceId, pending.hash);
-        } else if (outcome === "deferred" && !this.#pending.has(sourceId)) {
-          this.#pending.set(sourceId, pending);
-          this.#scheduleFlush();
-        } else if (outcome === "failed") {
-          this.#surfaceRejections([
-            {
-              eventId: null,
-              reason: `catalog snapshot for ${sourceId} rejected with HTTP ${response.status}`,
-            },
-          ]);
-        }
-      } catch (error) {
-        this.#surfaceRejections([
-          {
-            eventId: null,
-            reason: `catalog snapshot for ${pending.sourceId} failed: ${errorMessage(error)}`,
-          },
-        ]);
       }
     }
+    for (const [sourceId, pending] of deferred) {
+      this.#pending.set(sourceId, pending);
+    }
+    if (deferred.size > 0) this.#scheduleFlush();
   }
 
   async #send(body: string): Promise<Response | undefined> {

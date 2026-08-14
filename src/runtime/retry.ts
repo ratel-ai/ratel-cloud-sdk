@@ -30,8 +30,10 @@ export async function requestWithRetry(
       // Network and timeout failures are retryable; exhaustion remains fail-open.
     }
     if (attempt + 1 < retry.maxAttempts) {
-      const delay =
-        retryAfterMs ?? Math.min(retry.initialBackoffMs * 2 ** attempt, retry.maxBackoffMs);
+      const delay = Math.min(
+        retryAfterMs ?? retry.initialBackoffMs * 2 ** attempt,
+        retry.maxBackoffMs,
+      );
       try {
         await sleep(delay);
       } catch {
@@ -59,7 +61,10 @@ export function nonNegative(value: number | undefined, fallback: number): number
 }
 
 export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 }
 
 function isRetryableStatus(status: number): boolean {
