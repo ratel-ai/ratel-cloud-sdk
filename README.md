@@ -62,23 +62,37 @@ const runtime = ratel();
 const cloudRuntime = ratelCloud.attach(runtime);
 ```
 
-`attach()` subscribes to search, invocation, registration, and experiment facts. It publishes an
-initial catalog snapshot and refreshes it after tool registration churn. Repeated calls
-with the same runtime return the same handle. `sourceId` defaults to the runtime's stable OTel
-`service.name`; override it only with another stable deployment identity:
+`attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
+remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
+process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
+requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
+against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
+
+`attach()` publishes an initial catalog snapshot and refreshes it after tool registration churn,
+debounced behind a quiet period with a max wait of four debounce windows so sustained churn
+cannot defer publication forever. Repeated calls with the same runtime return the same handle.
+`sourceId` defaults to the runtime's stable OTel `service.name`; override it only with another
+stable deployment identity (it is trimmed and truncated to 512 characters once, and both delivery
+lanes share the normalized value):
 
 ```ts
 const cloudRuntime = ratelCloud.attach(runtime, { sourceId: "checkout-worker" });
 ```
 
-Catalog failures remain queued with backoff, and durable snapshots reconcile every five minutes.
-Tune those windows with `snapshotDebounceMs` and `snapshotReconcileIntervalMs`.
+Transient catalog failures remain queued and retry with an exponential backoff that keeps growing
+across consecutive failing cycles (capped at `maxBackoffMs`, honoring `Retry-After` on 429), and
+durable snapshots reconcile every five minutes. Deterministic payload rejects (HTTP 400/413/415)
+are surfaced once through `onRejected` and dropped instead of retrying. Tune the windows with
+`snapshotDebounceMs` and `snapshotReconcileIntervalMs`.
 
 Set `RATEL_CLOUD_EVENTS=off` before calling `attach()` to disable event delivery. Catalog snapshots
 remain enabled; the events publisher reads this kill switch once when the attachment is created.
 
 Delivery is fail-open and in memory. On long-running processes, call `close()` during final
-shutdown to unsubscribe and drain accepted work. In serverless handlers, keep the attachment for
+shutdown to unsubscribe and drain accepted work: nothing is sent after `close()` resolves, and
+envelopes the native queue delivers too late count as `dropped` in the delivery status. Awaited
+`flush()`/`close()` calls keep the process alive until their drain settles (even across a retry
+delay); background delivery timers never do. In serverless handlers, keep the attachment for
 warm invocations and explicitly `flush()` before each invocation ends:
 
 ```ts
@@ -96,7 +110,8 @@ process.once("SIGTERM", () => void cloudRuntime.close());
 Pass `onRejected` to observe terminal event delivery failures, Cloud event rejects, and catalog
 tools omitted by client-side snapshot limits. Snapshot publication matches Cloud's limits: 5,000
 tools and a 4,000,000-byte body; IDs/names are trimmed to 512 characters and descriptions to
-16,384 characters. A degraded `202 { synced: false }` remains pending for a later retry.
+16,384 characters. A degraded `202 { synced: false }` remains pending and retries on a slow
+cadence (30 seconds — Cloud caches its ingest decision) until Cloud confirms a durable sync.
 
 ### Runtime delivery observability
 
