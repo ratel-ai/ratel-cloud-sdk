@@ -51,4 +51,42 @@ describe("hashCatalogSnapshot", () => {
       "dc0d168a666020cfe2386f0867d4f1ebe0097034ca424edd477f77317665593e",
     );
   });
+
+  it("preserves JSON omission and array-null semantics for undefined values", () => {
+    expect(
+      hashCatalogSnapshot({
+        source_id: "worker-exotic",
+        tools: [
+          {
+            id: "undefined",
+            name: "undefined",
+            inputSchema: {
+              properties: { kept: { type: "string" }, omitted: undefined },
+              required: ["kept", undefined],
+            },
+          },
+        ],
+      }),
+    ).toBe("e00a087a6859a9ff16708743dafa9266f534f140c3b9b44f26a231cf19ff41b0");
+  });
+
+  it("preserves JSON coercion semantics for exotic schema values", () => {
+    expect(
+      hashCatalogSnapshot({
+        source_id: "worker-exotic",
+        tools: [
+          {
+            id: "exotic",
+            name: "exotic",
+            inputSchema: {
+              createdAt: new Date("2026-08-14T00:00:00.000Z"),
+              nan: Number.NaN,
+              infinity: Number.POSITIVE_INFINITY,
+              pattern: /ratel/,
+            },
+          },
+        ],
+      }),
+    ).toBe("941bde1721281135461e8566e5c6c83dec23ef3db9ee12bea6cc4f2193d75c92");
+  });
 });
