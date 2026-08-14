@@ -559,6 +559,27 @@ describe("attach", () => {
     }
   });
 
+  it("warns once and returns a noop handle when the runtime has no events interface", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const legacyRuntime = {
+        catalog: { snapshot: () => ({ source_id: "service-a", tools: [], skills: [] }) },
+      } as unknown as RatelRuntime;
+
+      const first = attach(legacyRuntime, { apiKey: "rtl_test" });
+      const second = attach(legacyRuntime, { apiKey: "rtl_test" });
+
+      expect(first.status().overall).toBe("degraded");
+      await expect(first.flush()).resolves.toBeUndefined();
+      await expect(second.close()).resolves.toBeUndefined();
+      expect(warn.mock.calls.map(([message]) => message)).toEqual([
+        "[ratel-cloud-sdk/runtime] version_skew: this @ratel-ai/sdk runtime exposes no events interface (upgrade to >=0.10.0) — facts are not persisting",
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("fails open when the SDK event subscription cannot be created", async () => {
     const runtime = {
       events: {

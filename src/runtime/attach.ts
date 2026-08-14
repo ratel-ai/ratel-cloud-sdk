@@ -99,6 +99,10 @@ const NOOP_ATTACHMENT: RuntimeAttachment = {
 /** Subscribe one Ratel runtime to fail-open Cloud delivery. */
 export function attach(runtime: RatelRuntime, options: AttachOptions = {}): RuntimeAttachment {
   try {
+    if (!hasRuntimeEvents(runtime)) {
+      warnMissingRuntimeEventsOnce();
+      return NOOP_ATTACHMENT;
+    }
     return attachRuntime(runtime, options);
   } catch {
     return NOOP_ATTACHMENT;
@@ -244,6 +248,30 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
   };
   ATTACHMENTS.set(runtime, handle);
   return handle;
+}
+
+/** A pre-runtime-events @ratel-ai/sdk (<0.10.0) exposes no `.events` on the runtime. */
+function hasRuntimeEvents(runtime: RatelRuntime): boolean {
+  try {
+    const events: Partial<RatelRuntimeEvents> | undefined = runtime?.events;
+    return typeof events?.subscribe === "function" && typeof events.sourceId === "string";
+  } catch {
+    return false;
+  }
+}
+
+let warnedMissingRuntimeEvents = false;
+
+function warnMissingRuntimeEventsOnce(): void {
+  if (warnedMissingRuntimeEvents) return;
+  warnedMissingRuntimeEvents = true;
+  try {
+    console.warn(
+      "[ratel-cloud-sdk/runtime] version_skew: this @ratel-ai/sdk runtime exposes no events interface (upgrade to >=0.10.0) — facts are not persisting",
+    );
+  } catch {
+    // Console diagnostics remain fail-open.
+  }
 }
 
 function toCatalogTool(tool: RatelRuntimeCatalogToolDefinition): RuntimeCatalogToolDefinition {

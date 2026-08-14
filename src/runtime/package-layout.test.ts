@@ -8,6 +8,8 @@ const PKG = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../../package.json"), "utf8"),
 ) as {
   exports: Record<string, { types: string; default: string }>;
+  peerDependencies: Record<string, string>;
+  peerDependenciesMeta: Record<string, { optional?: boolean }>;
 };
 
 describe("the /runtime subpath", () => {
@@ -29,5 +31,10 @@ describe("the /runtime subpath", () => {
 
   it("keeps runtime attachment off the dependency-free root", () => {
     expect(root).not.toHaveProperty("attach");
+  });
+
+  it("declares the runtime-events SDK floor as an optional peer", () => {
+    expect(PKG.peerDependencies["@ratel-ai/sdk"]).toBe(">=0.10.0");
+    expect(PKG.peerDependenciesMeta["@ratel-ai/sdk"]).toEqual({ optional: true });
   });
 });
