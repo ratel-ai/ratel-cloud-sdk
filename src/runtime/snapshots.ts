@@ -6,6 +6,7 @@ import type { RuntimeEventRejection, RuntimeEventsRetryOptions } from "./publish
 import {
   createRetryConfig,
   nonNegative,
+  parseRetryAfter,
   positiveInteger,
   type RetryConfig,
   requestWithRetry,
@@ -14,6 +15,10 @@ import {
 
 const DEFAULT_DEBOUNCE_MS = 500;
 const DEFAULT_RECONCILE_INTERVAL_MS = 5 * 60_000;
+/** Cloud caches its ingest-flag decision, so a deferred snapshot retries slowly. */
+const DEFERRED_RETRY_DELAY_MS = 30_000;
+/** Deterministic payload rejects that will never succeed on an identical retry. */
+const TERMINAL_REJECT_STATUSES = new Set([400, 413, 415]);
 const CATALOG_SNAPSHOT_MAX_BYTES = 4_000_000;
 const CATALOG_SNAPSHOT_MAX_TOOLS = 5_000;
 const CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH = 512;
@@ -82,6 +87,7 @@ export class CatalogSnapshotsPublisher {
   #reconcileTimer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
   #closed = false;
+  #failureStreak = 0;
 
   constructor(options: CatalogSnapshotsPublisherOptions) {
     this.#apiKey = options.apiKey;
@@ -173,13 +179,17 @@ export class CatalogSnapshotsPublisher {
 
   async #drainPending(): Promise<void> {
     const retryPending = new Map<string, PendingCatalogSnapshot>();
+    let attempted = false;
     let retryWithBackoff = false;
+    let deferred = false;
+    let retryAfterMs: number | undefined;
     while (this.#pending.size > 0) {
       this.#clearFlushTimer();
       const pendingSnapshots = [...this.#pending.values()];
       this.#pending.clear();
       for (const pending of pendingSnapshots) {
         const sourceId = pending.sourceId;
+        attempted = true;
         retryPending.delete(sourceId);
         this.#inFlightHashes.set(sourceId, pending.hash);
         try {
@@ -209,6 +219,7 @@ export class CatalogSnapshotsPublisher {
           } else if (outcome === "deferred") {
             this.#deliveryStatus.recordSnapshot(sourceId, delivery);
             this.#restoreLatest(retryPending, pending);
+            deferred = true;
           } else if (outcome === "failed") {
             this.#deliveryStatus.recordSnapshot(sourceId, delivery);
             this.#surfaceRejections([
@@ -217,8 +228,15 @@ export class CatalogSnapshotsPublisher {
                 reason: `catalog snapshot for ${sourceId} rejected with HTTP ${response.status}`,
               },
             ]);
+            if (TERMINAL_REJECT_STATUSES.has(response.status)) {
+              this.#dropLatest(pending);
+              continue;
+            }
             this.#restoreLatest(retryPending, pending);
             retryWithBackoff = true;
+            if (response.status === 429) {
+              retryAfterMs = parseRetryAfter(response.headers.get("retry-after")) ?? retryAfterMs;
+            }
           }
         } catch (error) {
           this.#deliveryStatus.recordSnapshot(sourceId, classifyDelivery(undefined));
@@ -237,12 +255,30 @@ export class CatalogSnapshotsPublisher {
         }
       }
     }
+    if (attempted) this.#failureStreak = retryWithBackoff ? this.#failureStreak + 1 : 0;
     for (const [sourceId, pending] of retryPending) {
       if (!this.#pending.has(sourceId)) this.#pending.set(sourceId, pending);
     }
     if (this.#pending.size > 0) {
-      this.#scheduleFlush(retryWithBackoff ? this.#failureBackoffMs() : this.#debounceMs);
+      this.#scheduleFlush(this.#retryDelayMs(retryWithBackoff, deferred, retryAfterMs));
     }
+  }
+
+  /** A deferred or failing snapshot never reschedules at the churn debounce. */
+  #retryDelayMs(
+    retryWithBackoff: boolean,
+    deferred: boolean,
+    retryAfterMs: number | undefined,
+  ): number {
+    if (retryWithBackoff) return retryAfterMs ?? this.#failureBackoffMs();
+    if (deferred) return Math.max(DEFERRED_RETRY_DELAY_MS, this.#debounceMs);
+    return this.#debounceMs;
+  }
+
+  #dropLatest(rejected: PendingCatalogSnapshot): void {
+    if (this.#latest.get(rejected.sourceId)?.hash !== rejected.hash) return;
+    this.#latest.delete(rejected.sourceId);
+    this.#reconcileAt.delete(rejected.sourceId);
   }
 
   #restoreLatest(
@@ -317,14 +353,14 @@ export class CatalogSnapshotsPublisher {
     this.#scheduleReconcile();
   }
 
+  /** Continues the in-request exponential curve across cycles, capped at maxBackoffMs. */
   #failureBackoffMs(): number {
-    return Math.max(
-      this.#debounceMs,
-      Math.min(
-        this.#retry.initialBackoffMs * 2 ** (this.#retry.maxAttempts - 1),
-        this.#retry.maxBackoffMs,
-      ),
+    const base = Math.min(
+      this.#retry.initialBackoffMs * 2 ** (this.#retry.maxAttempts - 1),
+      this.#retry.maxBackoffMs,
     );
+    const growth = 2 ** Math.min(Math.max(this.#failureStreak - 1, 0), 30);
+    return Math.max(this.#debounceMs, Math.min(base * growth, this.#retry.maxBackoffMs));
   }
 
   #clearFlushTimer(): void {

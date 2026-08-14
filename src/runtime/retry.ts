@@ -86,7 +86,7 @@ function fullJitter(delayMs: number, random: () => number): number {
   return delayMs * ratio;
 }
 
-function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
   if (value === null) return undefined;
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;

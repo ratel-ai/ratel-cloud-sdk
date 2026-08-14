@@ -117,6 +117,121 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(requests).toBe(2);
   });
 
+  it("reschedules a deferred snapshot on a slow cadence instead of the debounce", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 0,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({ synced: false }, { status: 202 });
+        }) as typeof fetch,
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(28_999);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(requests).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a terminally rejected snapshot after surfacing it once", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 0,
+        reconcileIntervalMs: 1_000,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({ error: "malformed" }, { status: 400 });
+        }) as typeof fetch,
+        onRejected: (items) => rejected.push(...items),
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(requests).toBe(1);
+      expect(rejected).toEqual([
+        { eventId: null, reason: "catalog snapshot for worker-a rejected with HTTP 400" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("grows the retry backoff across consecutive failing cycles up to the cap", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 0,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({}, { status: 503 });
+        }) as typeof fetch,
+        retry: { maxAttempts: 1, initialBackoffMs: 10_000, maxBackoffMs: 30_000 },
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(requests).toBe(2);
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(requests).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requests).toBe(3);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(requests).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors Retry-After when rescheduling a rate limited snapshot cycle", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 0,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({}, { status: 429, headers: { "Retry-After": "60" } });
+        }) as typeof fetch,
+        retry: { maxAttempts: 1, initialBackoffMs: 100 },
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(requests).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("publishes an unchanged startup snapshot after the network recovers", async () => {
     vi.useFakeTimers();
     let online = false;
