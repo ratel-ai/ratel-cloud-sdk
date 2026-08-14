@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeEvent } from "../types.js";
+import { DeliveryStatus } from "./delivery-status.js";
 import { RuntimeEventsPublisher } from "./publisher.js";
 
 const EVENT: RuntimeEvent = {
@@ -475,6 +476,232 @@ describe("RuntimeEventsPublisher", () => {
       await vi.advanceTimersByTimeAsync(10);
 
       expect(requests).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requeues a deferred batch and retries it on the slow cadence until accepted", async () => {
+    vi.useFakeTimers();
+    try {
+      const bodies: Array<{ events: RuntimeEvent[] }> = [];
+      let deferrals = 1;
+      const deliveryStatus = new DeliveryStatus({ warnOnFailure: false });
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        deliveryStatus,
+        fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+          bodies.push(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] });
+          if (deferrals > 0) {
+            deferrals -= 1;
+            return Response.json(
+              { accepted: 0, duplicates: 0, rejected: [], deferred: true },
+              { status: 202 },
+            );
+          }
+          return Response.json({ accepted: 1, duplicates: 0, rejected: [] }, { status: 202 });
+        }) as typeof fetch,
+      });
+
+      publisher.publish(EVENT);
+      await publisher.flush();
+      expect(bodies).toHaveLength(1);
+      // The normal flush interval must not resend a deferred batch.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(bodies).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(28_999);
+      expect(bodies).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]?.events).toEqual([EVENT]);
+      // Accepted delivery ends the deferral loop without double counting.
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(bodies).toHaveLength(2);
+      expect(deliveryStatus.snapshot().events).toMatchObject({
+        accepted: 1,
+        rejected: 0,
+        dropped: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("grows the deferred cadence across consecutive deferrals up to the cap", async () => {
+    vi.useFakeTimers();
+    try {
+      let requests = 0;
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        fetch: (async () => {
+          requests += 1;
+          return Response.json(
+            { accepted: 0, duplicates: 0, rejected: [], deferred: true },
+            { status: 202 },
+          );
+        }) as typeof fetch,
+      });
+
+      publisher.publish(EVENT);
+      await publisher.flush();
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(requests).toBe(2);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(requests).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requests).toBe(3);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(requests).toBe(4);
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(requests).toBe(5);
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(requests).toBe(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requests).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets the deferred cadence to the floor once a delivery is accepted", async () => {
+    vi.useFakeTimers();
+    try {
+      let requests = 0;
+      const outcomes = ["deferred", "deferred", "accepted", "deferred", "accepted"] as const;
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        fetch: (async () => {
+          const outcome = outcomes[requests] ?? "accepted";
+          requests += 1;
+          if (outcome === "deferred") {
+            return Response.json(
+              { accepted: 0, duplicates: 0, rejected: [], deferred: true },
+              { status: 202 },
+            );
+          }
+          return Response.json({ accepted: 1, duplicates: 0, rejected: [] }, { status: 202 });
+        }) as typeof fetch,
+      });
+
+      publisher.publish(EVENT);
+      await publisher.flush();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests).toBe(3);
+
+      publisher.publish({ ...EVENT, event_id: "event-after-recovery" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(requests).toBe(4);
+      // A new deferral streak starts back at the 30s floor, not the grown delay.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(requests).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats an accepted response without a deferred field as terminal", async () => {
+    vi.useFakeTimers();
+    try {
+      let requests = 0;
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        fetch: (async () => {
+          requests += 1;
+          // An older Cloud answers a flag-off ingest with no deferred marker.
+          return Response.json({ accepted: 0, duplicates: 0, rejected: [] }, { status: 202 });
+        }) as typeof fetch,
+      });
+
+      publisher.publish(EVENT);
+      await publisher.flush();
+      await vi.advanceTimersByTimeAsync(600_000);
+
+      expect(requests).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a batch deferred during close instead of retrying past shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      let requests = 0;
+      const deliveryStatus = new DeliveryStatus({ warnOnFailure: false });
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        deliveryStatus,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json(
+            { accepted: 0, duplicates: 0, rejected: [], deferred: true },
+            { status: 202 },
+          );
+        }) as typeof fetch,
+      });
+
+      publisher.publish(EVENT);
+      await publisher.close();
+
+      expect(requests).toBe(1);
+      expect(deliveryStatus.snapshot().events.dropped).toBe(1);
+      // Nothing may fetch after close resolves.
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(requests).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the oldest events when a deferred requeue overflows the queue", async () => {
+    vi.useFakeTimers();
+    try {
+      const delivered: RuntimeEvent[] = [];
+      let publishLive = (): void => {};
+      let deferrals = 1;
+      const deliveryStatus = new DeliveryStatus({ warnOnFailure: false });
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        queueCapacity: 2,
+        deliveryStatus,
+        fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as { events: RuntimeEvent[] };
+          if (deferrals > 0) {
+            deferrals -= 1;
+            // The host keeps emitting while the deferred batch is in flight.
+            publishLive();
+            return Response.json(
+              { accepted: 0, duplicates: 0, rejected: [], deferred: true },
+              { status: 202 },
+            );
+          }
+          delivered.push(...body.events);
+          return Response.json(
+            { accepted: body.events.length, duplicates: 0, rejected: [] },
+            { status: 202 },
+          );
+        }) as typeof fetch,
+      });
+      publishLive = () => publisher.publish({ ...EVENT, event_id: "event-3", ts: 103 });
+
+      publisher.publish({ ...EVENT, event_id: "event-1", session_id: "session-dropped", ts: 101 });
+      publisher.publish({ ...EVENT, event_id: "event-2", ts: 102 });
+      await publisher.flush();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(delivered.map((event) => event.event_id)).toEqual([
+        "event-2",
+        "event-3",
+        expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+      ]);
+      expect(delivered[2]).toMatchObject({
+        type: "events_dropped",
+        session_id: "session-dropped",
+        dropped_count: 1,
+        reason: "queue_overflow",
+      });
+      expect(deliveryStatus.snapshot().events.dropped).toBe(1);
     } finally {
       vi.useRealTimers();
     }

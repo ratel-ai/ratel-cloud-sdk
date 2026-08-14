@@ -17,13 +17,19 @@ export const RUNTIME_EVENT_BATCH_MAX_BYTES = 3_900_000;
 export const RUNTIME_EVENT_MAX_BYTES = 64 * 1_024;
 
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
+/** Cloud caches its ingest-flag decision, so a deferred batch retries slowly. */
+const DEFERRED_RETRY_DELAY_MS = 30_000;
+const DEFERRED_RETRY_MAX_DELAY_MS = 5 * 60_000;
 
 const BATCH_PREFIX = '{"events":[';
 const BATCH_SUFFIX = "]}";
 const UTF8 = new TextEncoder();
 
+type BatchSendOutcome = "settled" | "deferred";
+
 interface SerializedBatch {
   readonly body: string;
+  readonly events: readonly RuntimeEvent[];
   readonly eventIds: readonly (string | null)[];
 }
 
@@ -97,6 +103,7 @@ export class RuntimeEventsPublisher {
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
   #closed = false;
+  #deferralStreak = 0;
 
   constructor(options: RuntimeEventsPublisherOptions) {
     this.#apiKey = options.apiKey;
@@ -180,20 +187,49 @@ export class RuntimeEventsPublisher {
       const built = createBatches(events);
       this.#deliveryStatus.recordEventRejections(built.rejected.length);
       this.#surfaceRejections(built.rejected);
+      const deferredEvents: RuntimeEvent[] = [];
       for (const batch of built.batches) {
-        await this.#sendBatch(batch);
+        const outcome = await this.#sendBatch(batch);
+        if (outcome === "deferred") deferredEvents.push(...batch.events);
       }
+      if (built.batches.length > 0) {
+        this.#deferralStreak = deferredEvents.length > 0 ? this.#deferralStreak + 1 : 0;
+      }
+      if (deferredEvents.length > 0) this.#requeueDeferred(deferredEvents);
     } catch {
       // Serialization and runtime failures are terminal but always fail-open.
     }
   }
 
-  #scheduleFlush(): void {
+  /** Cloud accepted the request but its ingest flag is off: retry later, slowly. */
+  #requeueDeferred(events: RuntimeEvent[]): void {
+    if (this.#closed) {
+      // A sealed publisher cannot retry past close(); count the loss instead.
+      this.#deliveryStatus.recordEventDrops(events.length);
+      return;
+    }
+    const overflow = events.length + this.#queue.length - this.#queueCapacity;
+    // Requeued events are the oldest, so overflow keeps the drop-oldest discipline.
+    for (const dropped of events.splice(0, Math.max(overflow, 0))) {
+      this.#recordDrop(dropped);
+    }
+    this.#queue.unshift(...events);
+    this.#clearFlushTimer();
+    this.#scheduleFlush(this.#deferredDelayMs());
+  }
+
+  /** 30s floor, doubling across consecutive deferred cycles, capped at 5 minutes. */
+  #deferredDelayMs(): number {
+    const growth = 2 ** Math.min(Math.max(this.#deferralStreak - 1, 0), 30);
+    return Math.min(DEFERRED_RETRY_DELAY_MS * growth, DEFERRED_RETRY_MAX_DELAY_MS);
+  }
+
+  #scheduleFlush(delayMs = this.#flushIntervalMs): void {
     if (this.#closed || this.#flushTimer !== undefined) return;
     this.#flushTimer = setTimeout(() => {
       this.#flushTimer = undefined;
       void this.#drain();
-    }, this.#flushIntervalMs);
+    }, delayMs);
     this.#flushTimer.unref?.();
   }
 
@@ -203,11 +239,17 @@ export class RuntimeEventsPublisher {
     this.#flushTimer = undefined;
   }
 
-  async #sendBatch(batch: SerializedBatch): Promise<void> {
+  async #sendBatch(batch: SerializedBatch): Promise<BatchSendOutcome> {
     const response = await this.#request(batch.body);
     const result = classifyDelivery(response);
     if (response?.ok) {
-      const report = await readDeliveryReport(response, batch.eventIds.length);
+      const body = await readJsonBody(response);
+      if (isRecord(body) && body.deferred === true) {
+        // Reachable and authenticated, but nothing persisted: record no counts.
+        this.#deliveryStatus.recordEvents(result);
+        return "deferred";
+      }
+      const report = parseDeliveryReport(body, batch.eventIds.length);
       const outcome: DeliveryResult =
         report.rejected.length === 0
           ? result
@@ -221,7 +263,7 @@ export class RuntimeEventsPublisher {
         rejected: report.rejected.length,
       });
       this.#surfaceRejections(report.rejected);
-      return;
+      return "settled";
     }
     this.#deliveryStatus.recordEvents(result, { rejected: batch.eventIds.length });
     this.#surfaceRejections(
@@ -232,6 +274,7 @@ export class RuntimeEventsPublisher {
           : "batch delivery failed after retries",
       })),
     );
+    return "settled";
   }
 
   async #request(body: string): Promise<Response | undefined> {
@@ -305,6 +348,7 @@ function createBatches(events: RuntimeEvent[]): BatchBuildResult {
     if (current.length === 0) return;
     batches.push({
       body: BATCH_PREFIX + serialized.join(",") + BATCH_SUFFIX,
+      events: current,
       eventIds: current.map(safeEventId),
     });
     current = [];
@@ -359,16 +403,15 @@ function safeEventId(event: RuntimeEvent): string | null {
   }
 }
 
-async function readDeliveryReport(
-  response: Response,
-  batchSize: number,
-): Promise<EventDeliveryReport> {
-  let body: unknown;
+async function readJsonBody(response: Response): Promise<unknown> {
   try {
-    body = await response.json();
+    return await response.json();
   } catch {
-    return { accepted: batchSize, rejected: [] };
+    return undefined;
   }
+}
+
+function parseDeliveryReport(body: unknown, batchSize: number): EventDeliveryReport {
   if (!isRecord(body) || !Array.isArray(body.rejected)) {
     return { accepted: batchSize, rejected: [] };
   }

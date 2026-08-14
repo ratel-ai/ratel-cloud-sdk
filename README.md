@@ -113,6 +113,16 @@ tools and a 4,000,000-byte body; IDs/names are trimmed to 512 characters and des
 16,384 characters. A degraded `202 { synced: false }` remains pending and retries on a slow
 cadence (30 seconds — Cloud caches its ingest decision) until Cloud confirms a durable sync.
 
+Events survive the same rollout window. While Cloud's ingest flag is off, an accepted `/events`
+response carrying `deferred: true` requeues the batch into the bounded in-memory queue and retries
+it on a slow cadence of its own — a 30-second floor, doubling across consecutive deferrals, capped
+at five minutes — instead of the normal flush interval. Loss stays bounded by `queueCapacity`:
+overflow keeps dropping the oldest events with the standard `events_dropped` accounting, so a
+rollout no longer silently discards everything emitted while the flag is off. An accepted delivery
+resets the cadence. A response without the field (an older Cloud) stays terminal fire-and-forget,
+and a batch deferred while `close()` drains is dropped and counted rather than retried past
+shutdown.
+
 ### Runtime delivery observability
 
 The attachment exposes synchronous, JSON-serializable delivery health and an explicit preflight:
