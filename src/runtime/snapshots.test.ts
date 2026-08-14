@@ -117,6 +117,52 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(requests).toBe(2);
   });
 
+  it("holds a keep-alive so an awaited snapshot flush survives unref'd retry sleeps", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        fetch: (async () =>
+          Response.json({}, { headers: { ETag: '"published"' } })) as typeof fetch,
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+
+      expect(setIntervalSpy).toHaveBeenCalledOnce();
+      expect(clearIntervalSpy).toHaveBeenCalledWith(setIntervalSpy.mock.results[0]?.value);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("does not hold a keep-alive for debounce-triggered snapshot drains", async () => {
+    vi.useFakeTimers();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    try {
+      let requests = 0;
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 10,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({}, { headers: { ETag: '"published"' } });
+        }) as typeof fetch,
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(requests).toBe(1);
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("reschedules a deferred snapshot on a slow cadence instead of the debounce", async () => {
     vi.useFakeTimers();
     let requests = 0;

@@ -42,6 +42,58 @@ describe("RuntimeEventsPublisher", () => {
     });
   });
 
+  it("holds a keep-alive so an awaited flush survives unref'd retry sleeps", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      let requests = 0;
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        fetch: (async () => {
+          requests += 1;
+          if (requests === 1) return Response.json({}, { status: 503 });
+          return Response.json({ accepted: 1, duplicates: 0, rejected: [] }, { status: 202 });
+        }) as typeof fetch,
+        retry: { maxAttempts: 2, initialBackoffMs: 1 },
+      });
+
+      publisher.publish(EVENT);
+      await publisher.flush();
+
+      expect(requests).toBe(2);
+      expect(setIntervalSpy).toHaveBeenCalledOnce();
+      expect(clearIntervalSpy).toHaveBeenCalledWith(setIntervalSpy.mock.results[0]?.value);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("does not hold a keep-alive for background timer drains", async () => {
+    vi.useFakeTimers();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    try {
+      let requests = 0;
+      const publisher = new RuntimeEventsPublisher({
+        apiKey: "rtl_test",
+        flushIntervalMs: 50,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({ accepted: 1, duplicates: 0, rejected: [] }, { status: 202 });
+        }) as typeof fetch,
+      });
+
+      publisher.publish(EVENT);
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(requests).toBe(1);
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("splits delivery at 5,000 events per batch", async () => {
     const batchSizes: number[] = [];
     const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {

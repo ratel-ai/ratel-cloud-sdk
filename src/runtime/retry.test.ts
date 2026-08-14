@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createRetryConfig, requestWithRetry, sleep } from "./retry.js";
+import { createRetryConfig, requestWithRetry, sleep, withKeepAlive } from "./retry.js";
 
 describe("requestWithRetry", () => {
   it("returns redirects without retrying", async () => {
@@ -37,6 +37,35 @@ describe("requestWithRetry", () => {
 
     expect(sleeps).toEqual([50, 75]);
     expect(random).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("withKeepAlive", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("holds a ref'd interval until awaited lifecycle work settles", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const result = await withKeepAlive(async () => {
+      const keepAlive = setIntervalSpy.mock.results[0]?.value as NodeJS.Timeout;
+      expect(keepAlive.hasRef()).toBe(true);
+      return "drained";
+    });
+
+    expect(result).toBe("drained");
+    expect(clearIntervalSpy).toHaveBeenCalledWith(setIntervalSpy.mock.results[0]?.value);
+  });
+
+  it("clears the keep-alive when the awaited work rejects", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    await expect(withKeepAlive(() => Promise.reject(new Error("offline")))).rejects.toThrow(
+      "offline",
+    );
+
+    expect(clearIntervalSpy).toHaveBeenCalledWith(setIntervalSpy.mock.results[0]?.value);
   });
 });
 

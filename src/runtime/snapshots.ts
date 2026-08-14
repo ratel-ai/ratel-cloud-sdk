@@ -11,6 +11,7 @@ import {
   type RetryConfig,
   requestWithRetry,
   sleep,
+  withKeepAlive,
 } from "./retry.js";
 
 const DEFAULT_DEBOUNCE_MS = 500;
@@ -161,13 +162,7 @@ export class CatalogSnapshotsPublisher {
   }
 
   async flush(): Promise<void> {
-    this.#clearFlushTimer();
-    const drain = this.#draining.then(
-      () => this.#drainPending(),
-      () => this.#drainPending(),
-    );
-    this.#draining = drain;
-    await drain;
+    await withKeepAlive(() => this.#drain());
   }
 
   async close(): Promise<void> {
@@ -175,6 +170,16 @@ export class CatalogSnapshotsPublisher {
     this.#clearFlushTimer();
     this.#clearReconcileTimer();
     await this.flush();
+  }
+
+  #drain(): Promise<void> {
+    this.#clearFlushTimer();
+    const drain = this.#draining.then(
+      () => this.#drainPending(),
+      () => this.#drainPending(),
+    );
+    this.#draining = drain;
+    return drain;
   }
 
   async #drainPending(): Promise<void> {
@@ -315,7 +320,7 @@ export class CatalogSnapshotsPublisher {
     this.#clearFlushTimer();
     this.#flushTimer = setTimeout(() => {
       this.#flushTimer = undefined;
-      void this.flush();
+      void this.#drain();
     }, delayMs);
     this.#flushTimer.unref?.();
   }
@@ -344,7 +349,7 @@ export class CatalogSnapshotsPublisher {
         continue;
       this.#pending.set(sourceId, latest);
     }
-    if (this.#pending.size > 0) void this.flush();
+    if (this.#pending.size > 0) void this.#drain();
     this.#scheduleReconcile();
   }
 

@@ -1,6 +1,8 @@
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_INITIAL_BACKOFF_MS = 250;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
+/** Largest 32-bit timer delay — the keep-alive interval never actually fires. */
+const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 
 export interface RetryOptions {
   maxAttempts?: number;
@@ -70,6 +72,20 @@ export function sleep(ms: number): Promise<void> {
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
   });
+}
+
+/**
+ * Holds a ref'd timer while an explicitly awaited lifecycle drain runs, so unref'd
+ * retry sleeps cannot let the process exit before the awaited promise resolves.
+ * Background timer-triggered drains stay unref'd and never block host shutdown.
+ */
+export async function withKeepAlive<T>(work: () => Promise<T>): Promise<T> {
+  const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
+  try {
+    return await work();
+  } finally {
+    clearInterval(keepAlive);
+  }
 }
 
 function isRetryableStatus(status: number): boolean {

@@ -9,6 +9,7 @@ import {
   type RetryConfig,
   requestWithRetry,
   sleep,
+  withKeepAlive,
 } from "./retry.js";
 
 export const RUNTIME_EVENT_BATCH_MAX_EVENTS = 5_000;
@@ -133,19 +134,23 @@ export class RuntimeEventsPublisher {
   }
 
   async flush(): Promise<void> {
-    this.#clearFlushTimer();
-    const drain = this.#draining.then(
-      () => this.#drainQueued(),
-      () => this.#drainQueued(),
-    );
-    this.#draining = drain;
-    await drain;
+    await withKeepAlive(() => this.#drain());
   }
 
   /** Stop accepting events, then deliver everything already queued. */
   async close(): Promise<void> {
     this.#closed = true;
     await this.flush();
+  }
+
+  #drain(): Promise<void> {
+    this.#clearFlushTimer();
+    const drain = this.#draining.then(
+      () => this.#drainQueued(),
+      () => this.#drainQueued(),
+    );
+    this.#draining = drain;
+    return drain;
   }
 
   /** Probe event ingestion with an empty batch without mutating the queue. */
@@ -187,7 +192,7 @@ export class RuntimeEventsPublisher {
     if (this.#closed || this.#flushTimer !== undefined) return;
     this.#flushTimer = setTimeout(() => {
       this.#flushTimer = undefined;
-      void this.flush();
+      void this.#drain();
     }, this.#flushIntervalMs);
     this.#flushTimer.unref?.();
   }
