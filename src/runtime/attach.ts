@@ -89,6 +89,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     ...(snapshotDebounceMs === undefined ? {} : { debounceMs: snapshotDebounceMs }),
     ...(delivery.retry === undefined ? {} : { retry: delivery.retry }),
     ...(delivery.sleep === undefined ? {} : { sleep: delivery.sleep }),
+    ...(delivery.onRejected === undefined ? {} : { onRejected: delivery.onRejected }),
   });
   const publishSnapshot = (): void => {
     try {
@@ -113,29 +114,33 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
   publishSnapshot();
 
   let closePromise: Promise<void> | undefined;
-  const flush = async (): Promise<void> => {
-    try {
-      await subscription.flush();
-    } catch {
-      // SDK delivery is observational and must not make host shutdown fail.
-    }
+  const flushPublishers = async (): Promise<void> => {
     try {
       await Promise.all([publisher.flush(), snapshots.flush()]);
     } catch {
       // Publisher lifecycle is fail-open too.
     }
   };
+  const flush = async (): Promise<void> => {
+    try {
+      await subscription.flush();
+    } catch {
+      // SDK delivery is observational and must not make host shutdown fail.
+    }
+    await flushPublishers();
+  };
   const handle: RuntimeAttachment = {
     flush,
     close: () => {
       closePromise ??= (async () => {
+        await flush();
         try {
           subscription.unsubscribe();
         } catch {
           // Detach failures cannot escape into host shutdown.
         }
         ATTACHMENTS.delete(runtime);
-        await flush();
+        await flushPublishers();
       })();
       return closePromise;
     },

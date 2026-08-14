@@ -93,7 +93,164 @@ describe("CatalogSnapshotsPublisher", () => {
     }
   });
 
-  it("skips unchanged canonical hashes and guards changed replacements with If-Match", async () => {
+  it("keeps a degraded 202 snapshot pending until Cloud confirms durable sync", async () => {
+    let requests = 0;
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async () => {
+        requests += 1;
+        if (requests === 1) {
+          return Response.json({ synced: false }, { status: 202 });
+        }
+        return Response.json({ synced: true }, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+    });
+    const snapshot = { source_id: "worker-a", tools: [tool("weather")] };
+
+    publisher.publish(snapshot);
+    await publisher.flush();
+    await publisher.flush();
+    publisher.publish(snapshot);
+    await publisher.flush();
+
+    expect(requests).toBe(2);
+  });
+
+  it("normalizes string limits and reports tools beyond the 5,000-tool cap", async () => {
+    let body = "";
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const tools = Array.from({ length: 5_001 }, (_, index) => tool(`tool-${index}`));
+    tools[0] = {
+      id: `  ${"i".repeat(600)}  `,
+      name: `  ${"n".repeat(600)}  `,
+      description: `  ${"d".repeat(20_000)}  `,
+    };
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        body = String(init?.body);
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({ source_id: "worker-a", tools });
+    await publisher.flush();
+
+    const request = JSON.parse(body) as {
+      tools: Array<{ id: string; name: string; description: string }>;
+    };
+    expect(request.tools).toHaveLength(5_000);
+    expect(request.tools[0]).toMatchObject({
+      id: "i".repeat(512),
+      name: "n".repeat(512),
+      description: "d".repeat(16_384),
+    });
+    expect(rejected).toContainEqual({
+      eventId: "tool-5000",
+      reason: "catalog snapshot tool limit is 5000",
+    });
+  });
+
+  it("skips and reports tools that cannot fit within the 4,000,000-byte body cap", async () => {
+    let body = "";
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        body = String(init?.body);
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({
+      source_id: "worker-a",
+      tools: [{ ...tool("too-large"), metadata: { payload: "x".repeat(4_000_000) } }, tool("fits")],
+    });
+    await publisher.flush();
+
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(4_000_000);
+    expect((JSON.parse(body) as { tools: unknown[] }).tools).toEqual([wireTool("fits")]);
+    expect(rejected).toContainEqual({
+      eventId: "too-large",
+      reason: "catalog snapshot tool cannot fit within 4000000 bytes",
+    });
+  });
+
+  it("skips and reports tools made invalid by identifier normalization", async () => {
+    let body = "";
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const collidingPrefix = "x".repeat(512);
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        body = String(init?.body);
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({
+      source_id: "worker-a",
+      tools: [
+        { ...tool("blank-name"), name: "   " },
+        { ...tool("fallback"), id: "   " },
+        { ...tool(`${collidingPrefix}-one`), name: "first" },
+        { ...tool(`${collidingPrefix}-two`), name: "second" },
+      ],
+    });
+    await publisher.flush();
+
+    expect((JSON.parse(body) as { tools: Array<{ id: string; name: string }> }).tools).toEqual([
+      expect.objectContaining({ id: "fallback", name: "fallback" }),
+      expect.objectContaining({ id: collidingPrefix, name: "first" }),
+    ]);
+    expect(rejected).toEqual([
+      { eventId: "blank-name", reason: "catalog snapshot tool name is empty" },
+      {
+        eventId: `${collidingPrefix}-two`,
+        reason: `catalog snapshot tool id is duplicated after normalization: ${collidingPrefix}`,
+      },
+    ]);
+  });
+
+  it("reports terminal snapshot HTTP failures without throwing", async () => {
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async () => Response.json({ error: "malformed" }, { status: 400 })) as typeof fetch,
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+    await expect(publisher.flush()).resolves.toBeUndefined();
+
+    expect(rejected).toContainEqual({
+      eventId: null,
+      reason: "catalog snapshot for worker-a rejected with HTTP 400",
+    });
+  });
+
+  it("reports exhausted snapshot delivery without throwing", async () => {
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      fetch: (() => Promise.reject(new Error("offline"))) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+    await expect(publisher.flush()).resolves.toBeUndefined();
+
+    expect(rejected).toContainEqual({
+      eventId: null,
+      reason: "catalog snapshot for worker-a failed after retries",
+    });
+  });
+
+  it("skips unchanged canonical hashes and publishes changed replacements unconditionally", async () => {
     const requests: RequestInit[] = [];
     const publisher = new CatalogSnapshotsPublisher({
       apiKey: "rtl_test",
@@ -125,33 +282,7 @@ describe("CatalogSnapshotsPublisher", () => {
 
     expect(requests).toHaveLength(2);
     expect(requests[0]?.headers).not.toHaveProperty("if-match");
-    expect(requests[1]?.headers).toMatchObject({ "if-match": '"server-version-1"' });
-  });
-
-  it("recovers from a stale If-Match before publishing later replacements", async () => {
-    const requests: RequestInit[] = [];
-    const publisher = new CatalogSnapshotsPublisher({
-      apiKey: "rtl_test",
-      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
-        requests.push(init ?? {});
-        if (requests.length === 2) return Response.json({}, { status: 412 });
-        return Response.json({}, { headers: { ETag: `"server-version-${requests.length}"` } });
-      }) as typeof fetch,
-    });
-
-    publisher.publish({ source_id: "worker-a", tools: [tool("one")] });
-    await publisher.flush();
-    publisher.publish({ source_id: "worker-a", tools: [tool("two")] });
-    await publisher.flush();
-    publisher.publish({ source_id: "worker-a", tools: [tool("three")] });
-    await publisher.flush();
-
-    expect(requests.map((request) => request.headers)).toEqual([
-      expect.not.objectContaining({ "if-match": expect.anything() }),
-      expect.objectContaining({ "if-match": '"server-version-1"' }),
-      expect.not.objectContaining({ "if-match": expect.anything() }),
-      expect.objectContaining({ "if-match": '"server-version-3"' }),
-    ]);
+    expect(requests[1]?.headers).not.toHaveProperty("if-match");
   });
 
   it("retries transient snapshot failures with exponential backoff", async () => {
@@ -224,28 +355,6 @@ describe("CatalogSnapshotsPublisher", () => {
     await expect(publisher.flush()).resolves.toBeUndefined();
   });
 
-  it("keeps conditional replacement state scoped to each source id", async () => {
-    const requests: RequestInit[] = [];
-    const publisher = new CatalogSnapshotsPublisher({
-      apiKey: "rtl_test",
-      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
-        requests.push(init ?? {});
-        return Response.json({}, { headers: { ETag: `"source-${requests.length}"` } });
-      }) as typeof fetch,
-    });
-
-    publisher.publish({ source_id: "worker-a", tools: [tool("one")] });
-    await publisher.flush();
-    publisher.publish({ source_id: "worker-b", tools: [tool("one")] });
-    await publisher.flush();
-    publisher.publish({ source_id: "worker-a", tools: [tool("two")] });
-    await publisher.flush();
-
-    expect(requests[0]?.headers).not.toHaveProperty("if-match");
-    expect(requests[1]?.headers).not.toHaveProperty("if-match");
-    expect(requests[2]?.headers).toMatchObject({ "if-match": '"source-1"' });
-  });
-
   it("keeps each source's changed snapshot queued independently", async () => {
     const sources: string[] = [];
     const publisher = new CatalogSnapshotsPublisher({
@@ -267,7 +376,7 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(sources).toEqual(["worker-b", "worker-a", "worker-c"]);
   });
 
-  it("serializes overlapping flushes so replacements use the latest ETag", async () => {
+  it("serializes overlapping flushes before publishing replacements", async () => {
     const requests: RequestInit[] = [];
     let resolveFirst: ((response: Response) => void) | undefined;
     const publisher = new CatalogSnapshotsPublisher({
@@ -294,7 +403,7 @@ describe("CatalogSnapshotsPublisher", () => {
     resolveFirst?.(Response.json({}, { headers: { ETag: '"first"' } }));
     await Promise.all([firstFlush, secondFlush]);
     expect(requests).toHaveLength(2);
-    expect(requests[1]?.headers).toMatchObject({ "if-match": '"first"' });
+    expect(requests[1]?.headers).not.toHaveProperty("if-match");
   });
 
   it("skips a queued snapshot when an identical in-flight replacement succeeds", async () => {

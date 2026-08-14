@@ -65,7 +65,7 @@ describe("RuntimeEventsPublisher", () => {
     expect(batchSizes).toEqual([5_000, 1]);
   });
 
-  it("keeps each serialized request body within 4 MiB", async () => {
+  it("keeps each serialized request body within the 3,900,000-byte client limit", async () => {
     const bodies: string[] = [];
     const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = String(init?.body);
@@ -84,9 +84,9 @@ describe("RuntimeEventsPublisher", () => {
     await publisher.flush();
 
     expect(bodies.length).toBeGreaterThan(1);
-    expect(
-      bodies.every((body) => new TextEncoder().encode(body).byteLength <= 4 * 1_024 * 1_024),
-    ).toBe(true);
+    expect(bodies.every((body) => new TextEncoder().encode(body).byteLength <= 3_900_000)).toBe(
+      true,
+    );
     expect(
       bodies.flatMap((body) => (JSON.parse(body) as { events: RuntimeEvent[] }).events),
     ).toHaveLength(70);
@@ -118,6 +118,42 @@ describe("RuntimeEventsPublisher", () => {
 
     expect(rejected).toEqual([{ eventId: EVENT.event_id, reason: "invalid event" }]);
     expect(requests).toBe(1);
+  });
+
+  it("reports every event dropped by a non-retryable batch failure", async () => {
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const publisher = new RuntimeEventsPublisher({
+      apiKey: "rtl_test",
+      fetch: (async () =>
+        Response.json({ error: "payload too large" }, { status: 413 })) as typeof fetch,
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({ ...EVENT, event_id: "event-1" });
+    publisher.publish({ ...EVENT, event_id: "event-2" });
+    await publisher.flush();
+
+    expect(rejected).toEqual([
+      { eventId: "event-1", reason: "batch rejected with HTTP 413" },
+      { eventId: "event-2", reason: "batch rejected with HTTP 413" },
+    ]);
+  });
+
+  it("reports every event dropped after delivery retries are exhausted", async () => {
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const publisher = new RuntimeEventsPublisher({
+      apiKey: "rtl_test",
+      fetch: (() => Promise.reject(new Error("offline"))) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    publisher.publish({ ...EVENT, event_id: "event-1" });
+    await publisher.flush();
+
+    expect(rejected).toEqual([
+      { eventId: "event-1", reason: "batch delivery failed after retries" },
+    ]);
   });
 
   it("does not retry a successful response without a JSON body", async () => {

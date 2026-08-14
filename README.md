@@ -90,6 +90,11 @@ export async function handler(request: Request) {
 process.once("SIGTERM", () => void cloudRuntime.close());
 ```
 
+Pass `onRejected` to observe terminal event delivery failures, Cloud event rejects, and catalog
+tools omitted by client-side snapshot limits. Snapshot publication matches Cloud's limits: 5,000
+tools and a 4,000,000-byte body; IDs/names are trimmed to 512 characters and descriptions to
+16,384 characters. A degraded `202 { synced: false }` remains pending for a later retry.
+
 The cross-repository live acceptance test is opt-in with `RATEL_E2E=1`; see the
 [runtime attach E2E example](./examples/README.md#runtime-attach-e2emjs--live-runtime-attach-acceptance).
 

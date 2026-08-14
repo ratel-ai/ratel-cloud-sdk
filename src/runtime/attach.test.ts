@@ -61,6 +61,25 @@ describe("attach", () => {
     ]);
   });
 
+  it("surfaces terminal snapshot failures through the attachment rejection hook", async () => {
+    const rejected: Array<{ eventId: string | null; reason: string }> = [];
+    const handle = attach(new FakeRuntime(), {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL) =>
+        String(input).endsWith("/catalog/snapshot")
+          ? Response.json({ error: "malformed" }, { status: 400 })
+          : Response.json({}, { status: 202 })) as typeof fetch,
+      onRejected: (items) => rejected.push(...items),
+    });
+
+    await handle.flush();
+
+    expect(rejected).toContainEqual({
+      eventId: null,
+      reason: "catalog snapshot for service-a rejected with HTTP 400",
+    });
+  });
+
   it("reuses one attachment and detaches it cleanly on close", async () => {
     const delivered: RuntimeEvent[] = [];
     const runtime = new FakeRuntime();
@@ -90,6 +109,46 @@ describe("attach", () => {
       subscriptions: 1,
       delivered: [{ ...EVENT, event_id: "before-close" }],
     });
+  });
+
+  it("drains native queued events before unsubscribing on close", async () => {
+    const delivered: RuntimeEvent[] = [];
+    let handler: ((batch: readonly RuntimeEvent[]) => void | PromiseLike<void>) | undefined;
+    let queued: RuntimeEvent[] = [{ ...EVENT, event_id: "native-queued" }];
+    const runtime = {
+      events: {
+        sourceId: "service-a",
+        subscribe: (next: typeof handler) => {
+          handler = next;
+          return {
+            droppedCount: 0,
+            flush: async () => {
+              const batch = queued;
+              queued = [];
+              await handler?.(batch);
+            },
+            unsubscribe: () => {
+              handler = undefined;
+              queued = [];
+            },
+          };
+        },
+      },
+      catalog: { snapshot: () => ({ source_id: "service-a", tools: [], skills: [] }) },
+    } satisfies RatelRuntime;
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          delivered.push(...(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] }).events);
+        }
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+    });
+
+    await handle.close();
+
+    expect(delivered).toEqual([{ ...EVENT, event_id: "native-queued" }]);
   });
 
   it("fails open when the SDK event subscription cannot be created", async () => {

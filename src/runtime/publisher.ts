@@ -11,7 +11,7 @@ import {
 } from "./retry.js";
 
 export const RUNTIME_EVENT_BATCH_MAX_EVENTS = 5_000;
-export const RUNTIME_EVENT_BATCH_MAX_BYTES = 4 * 1_024 * 1_024;
+export const RUNTIME_EVENT_BATCH_MAX_BYTES = 3_900_000;
 export const RUNTIME_EVENT_MAX_BYTES = 64 * 1_024;
 
 const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
@@ -22,6 +22,7 @@ const UTF8 = new TextEncoder();
 
 interface SerializedBatch {
   readonly body: string;
+  readonly eventIds: readonly (string | null)[];
 }
 
 interface BatchBuildResult {
@@ -38,6 +39,7 @@ interface DropWindow {
 }
 
 export interface RuntimeEventRejection {
+  /** Event ID, or a tool ID when `attach()` reports a catalog omission. */
   readonly eventId: string | null;
   readonly reason: string;
 }
@@ -57,7 +59,7 @@ export interface RuntimeEventsPublisherOptions {
   queueCapacity?: number;
   /** Delay before queued events drain automatically. Defaults to 1 second. */
   flushIntervalMs?: number;
-  /** Called for terminal per-event rejects returned by Cloud. */
+  /** Called for terminal delivery rejects; `attach()` also reports catalog omissions here. */
   onRejected?: (rejected: readonly RuntimeEventRejection[]) => void;
   retry?: RuntimeEventsRetryOptions;
   /** Injectable timer for runtimes and deterministic tests. */
@@ -170,7 +172,18 @@ export class RuntimeEventsPublisher {
       this.#retry,
       this.#sleep,
     );
-    if (response?.ok) this.#surfaceRejections(await readRejections(response));
+    if (response?.ok) {
+      this.#surfaceRejections(await readRejections(response));
+      return;
+    }
+    this.#surfaceRejections(
+      batch.eventIds.map((eventId) => ({
+        eventId,
+        reason: response
+          ? `batch rejected with HTTP ${response.status}`
+          : "batch delivery failed after retries",
+      })),
+    );
   }
 
   #surfaceRejections(rejected: readonly RuntimeEventRejection[]): void {
@@ -223,7 +236,10 @@ function createBatches(events: RuntimeEvent[]): BatchBuildResult {
 
   const finish = (): void => {
     if (current.length === 0) return;
-    batches.push({ body: BATCH_PREFIX + serialized.join(",") + BATCH_SUFFIX });
+    batches.push({
+      body: BATCH_PREFIX + serialized.join(",") + BATCH_SUFFIX,
+      eventIds: current.map(safeEventId),
+    });
     current = [];
     serialized = [];
     bytes = byteLength(BATCH_PREFIX) + byteLength(BATCH_SUFFIX);
