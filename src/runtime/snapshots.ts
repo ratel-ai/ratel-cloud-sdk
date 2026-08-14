@@ -390,6 +390,11 @@ export class CatalogSnapshotsPublisher {
   }
 }
 
+/** Trims and truncates a source id exactly like snapshot payload normalization. */
+export function normalizeSourceId(value: string): string {
+  return normalizeText(value, CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH);
+}
+
 function prepareSnapshot(snapshot: RuntimeCatalogSnapshot): PreparedCatalogSnapshot {
   const rejected: RuntimeEventRejection[] = [];
   const sourceId = normalizeText(snapshot.source_id, CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH);

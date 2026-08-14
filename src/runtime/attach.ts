@@ -8,7 +8,7 @@ import {
 } from "./delivery-status.js";
 import { RuntimeEventsPublisher, type RuntimeEventsPublisherOptions } from "./publisher.js";
 import { nonNegative } from "./retry.js";
-import { CatalogSnapshotsPublisher } from "./snapshots.js";
+import { CatalogSnapshotsPublisher, normalizeSourceId } from "./snapshots.js";
 
 const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 500;
 
@@ -109,13 +109,15 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
 
   const {
     apiKey = process.env.RATEL_API_KEY ?? "",
-    sourceId = runtime.events.sourceId,
+    sourceId: rawSourceId = runtime.events.sourceId,
     snapshotDebounceMs,
     snapshotReconcileIntervalMs,
     onStatusChange,
     warnOnFailure,
     ...delivery
   } = options;
+  // One normalization at the boundary keeps both lanes on a single source identity.
+  const sourceId = normalizeSourceId(rawSourceId);
   const enabled = process.env.RATEL_CLOUD_EVENTS?.trim().toLowerCase() !== "off";
   const deliveryStatus = new DeliveryStatus({
     enabled,

@@ -242,6 +242,36 @@ describe("attach", () => {
     expect(delivered.map((event) => event.event_id)).toEqual(["allowed"]);
   });
 
+  it("normalizes the source id once for both delivery lanes", async () => {
+    const stamped: Array<{ lane: string; sourceId: string }> = [];
+    const runtime = new FakeRuntime();
+    const longTail = "x".repeat(600);
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      sourceId: `  worker-a-${longTail}  `,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/events")) {
+          const { events } = JSON.parse(String(init?.body)) as { events: RuntimeEvent[] };
+          for (const event of events) stamped.push({ lane: "events", sourceId: event.source_id });
+          return Response.json({ accepted: 1, duplicates: 0, rejected: [] }, { status: 202 });
+        }
+        const { source_id } = JSON.parse(String(init?.body)) as { source_id: string };
+        stamped.push({ lane: "snapshots", sourceId: source_id });
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+    });
+
+    runtime.emit(EVENT);
+    await handle.flush();
+    await handle.close();
+
+    const expected = `worker-a-${longTail}`.slice(0, 512);
+    expect(stamped).toContainEqual({ lane: "events", sourceId: expected });
+    expect(stamped).toContainEqual({ lane: "snapshots", sourceId: expected });
+    expect(stamped.map(({ sourceId }) => sourceId)).toEqual(stamped.map(() => expected));
+  });
+
   it("publishes the latest complete catalog on attach and registration churn", async () => {
     const snapshots: unknown[] = [];
     const runtime = new FakeRuntime();
