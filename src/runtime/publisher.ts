@@ -78,6 +78,8 @@ export class RuntimeEventsPublisher {
   readonly #flushIntervalMs: number;
   readonly #queue: RuntimeEvent[] = [];
   readonly #dropWindows = new Map<string, Map<string, DropWindow>>();
+  #dropWindowCount = 0;
+  #overflowDropWindow: DropWindow | undefined;
   #flushTimer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
 
@@ -125,6 +127,8 @@ export class RuntimeEventsPublisher {
         ...bySession.values(),
       ]);
       this.#dropWindows.clear();
+      this.#dropWindowCount = 0;
+      this.#overflowDropWindow = undefined;
       events.push(...dropWindows.map(droppedEvent));
       const built = createBatches(events);
       this.#surfaceRejections(built.rejected);
@@ -180,25 +184,34 @@ export class RuntimeEventsPublisher {
 
   #recordDrop(event: RuntimeEvent): void {
     const timestamp = Number.isFinite(event.ts) ? event.ts : Date.now();
-    let bySession = this.#dropWindows.get(event.source_id);
-    if (bySession === undefined) {
-      bySession = new Map();
-      this.#dropWindows.set(event.source_id, bySession);
-    }
-    const dropWindow = bySession.get(event.session_id);
+    const bySession = this.#dropWindows.get(event.source_id);
+    const dropWindow = bySession?.get(event.session_id);
     if (dropWindow) {
-      dropWindow.count += 1;
-      dropWindow.endTs = timestamp;
+      extendDropWindow(dropWindow, timestamp);
       return;
     }
-    bySession.set(event.session_id, {
+    if (this.#dropWindowCount >= this.#queueCapacity) {
+      // Preserve the total while preferring bounded memory over exact high-cardinality attribution.
+      if (this.#overflowDropWindow) extendDropWindow(this.#overflowDropWindow, timestamp);
+      return;
+    }
+    const nextWindow = {
       count: 1,
       startTs: timestamp,
       endTs: timestamp,
       sessionId: event.session_id,
       sourceId: event.source_id,
-    });
+    };
+    if (bySession) bySession.set(event.session_id, nextWindow);
+    else this.#dropWindows.set(event.source_id, new Map([[event.session_id, nextWindow]]));
+    this.#dropWindowCount += 1;
+    this.#overflowDropWindow ??= nextWindow;
   }
+}
+
+function extendDropWindow(window: DropWindow, timestamp: number): void {
+  window.count += 1;
+  window.endTs = timestamp;
 }
 
 function createBatches(events: RuntimeEvent[]): BatchBuildResult {

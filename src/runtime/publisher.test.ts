@@ -279,6 +279,43 @@ describe("RuntimeEventsPublisher", () => {
     ]);
   });
 
+  it("bounds overflow ledger cardinality by the queue capacity", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const publisher = new RuntimeEventsPublisher({
+      apiKey: "rtl_test",
+      queueCapacity: 2,
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { events: RuntimeEvent[] };
+        delivered.push(...body.events);
+        return Response.json(
+          { accepted: body.events.length, duplicates: 0, rejected: [] },
+          { status: 202 },
+        );
+      }) as typeof fetch,
+    });
+
+    for (let index = 0; index < 100; index += 1) {
+      publisher.publish({
+        ...EVENT,
+        event_id: `event-${index}`,
+        session_id: `session-${index}`,
+      });
+    }
+    await publisher.flush();
+
+    const ledgers = delivered.filter((event) => event.type === "events_dropped");
+    expect(ledgers).toHaveLength(2);
+    expect(ledgers.every((event) => typeof event.dropped_count === "number")).toBe(true);
+    expect(
+      ledgers.reduce(
+        (count, event) =>
+          count + (typeof event.dropped_count === "number" ? event.dropped_count : 0),
+        0,
+      ),
+    ).toBe(98);
+    expect(delivered).toHaveLength(4);
+  });
+
   it("rejects an event over 64 KiB locally without sinking valid events", async () => {
     const delivered: RuntimeEvent[] = [];
     const rejected: Array<{ eventId: string | null; reason: string }> = [];
