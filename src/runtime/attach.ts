@@ -11,6 +11,8 @@ import { nonNegative } from "./retry.js";
 import { CatalogSnapshotsPublisher, normalizeSourceId } from "./snapshots.js";
 
 const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 500;
+/** Sustained churn re-arms the debounce forever; the max wait forces publication. */
+const SNAPSHOT_MAX_WAIT_MULTIPLIER = 4;
 
 export interface RuntimeEventSubscription {
   readonly droppedCount: number;
@@ -151,15 +153,22 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     }
   };
   const debounceMs = nonNegative(snapshotDebounceMs, DEFAULT_SNAPSHOT_DEBOUNCE_MS);
+  const maxWaitMs = debounceMs * SNAPSHOT_MAX_WAIT_MULTIPLIER;
   let snapshotDirty = false;
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+  let snapshotMaxWaitTimer: ReturnType<typeof setTimeout> | undefined;
   const flushDirtySnapshot = (): void => {
     if (snapshotTimer !== undefined) {
       clearTimeout(snapshotTimer);
       snapshotTimer = undefined;
     }
+    if (snapshotMaxWaitTimer !== undefined) {
+      clearTimeout(snapshotMaxWaitTimer);
+      snapshotMaxWaitTimer = undefined;
+    }
     if (!snapshotDirty) return;
     snapshotDirty = false;
+    // The publisher drains on its own immediate unref'd schedule after publish.
     publishSnapshot();
   };
   const markSnapshotDirty = (): void => {
@@ -168,9 +177,14 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     snapshotTimer = setTimeout(() => {
       snapshotTimer = undefined;
       flushDirtySnapshot();
-      void snapshots.flush();
     }, debounceMs);
     snapshotTimer.unref?.();
+    if (debounceMs === 0 || snapshotMaxWaitTimer !== undefined) return;
+    snapshotMaxWaitTimer = setTimeout(() => {
+      snapshotMaxWaitTimer = undefined;
+      flushDirtySnapshot();
+    }, maxWaitMs);
+    snapshotMaxWaitTimer.unref?.();
   };
   const subscription = runtime.events.subscribe((batch) => {
     for (const event of batch) {

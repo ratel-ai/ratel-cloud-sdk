@@ -352,6 +352,33 @@ describe("attach", () => {
     }
   });
 
+  it("forces a snapshot publish under sustained churn once the max wait elapses", async () => {
+    vi.useFakeTimers();
+    const runtime = new FakeRuntime();
+    const snapshot = vi.spyOn(runtime.catalog, "snapshot");
+    try {
+      const handle = attach(runtime, {
+        apiKey: "rtl_test",
+        snapshotDebounceMs: 100,
+        fetch: (async () =>
+          Response.json({}, { headers: { ETag: '"published"' } })) as typeof fetch,
+      });
+
+      // Sustained sub-debounce churn re-arms the trailing edge forever.
+      for (let index = 0; index < 8; index += 1) {
+        runtime.emit({ ...EVENT, event_id: `churn-${index}`, type: "index_churn" });
+        await vi.advanceTimersByTimeAsync(index === 7 ? 49 : 50);
+      }
+      expect(snapshot).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(snapshot).toHaveBeenCalledOnce();
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not rebuild the tool snapshot for skill churn", async () => {
     const runtime = new FakeRuntime();
     const snapshot = vi.spyOn(runtime.catalog, "snapshot");
