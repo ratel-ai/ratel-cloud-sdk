@@ -29,6 +29,39 @@ RATEL_API_KEY=rtl_… RATEL_BASE_URL=https://my-host/api/v1 pnpm run example:e2e
 Each step prints a `✓`/`✗` line; the process exits non-zero if any step fails,
 so it doubles as a smoke test in CI against a live staging project.
 
+## `runtime-attach-e2e.mjs` — live runtime attach acceptance
+
+Runs only against a locally running `ratel-cloud`; there is no mock fallback. It creates an
+isolated organization, project, and API key in the local Postgres database, drives a real
+`@ratel-ai/sdk` ToolCatalog through `attach()`, verifies Cloud's persisted read models, then
+deletes the organization and all cascaded test data.
+
+The acceptance covers all cross-repository paths: runtime facts in `trace_events`, the tool in
+the synced catalog read model, an oversized event in the metadata-only Dropped ledger, and an
+OTLP search span arriving alongside the direct fact without double-counting its
+`ratel.event.id`. Its final JSON summary also prints the attachment's `deliveryStatus` snapshot.
+
+Prerequisites:
+
+- build this package and the runtime-events branch of `@ratel-ai/sdk`;
+- migrate and run the runtime-events branch of `ratel-cloud` against local Postgres;
+- point the test at that same server and database.
+
+```bash
+pnpm build
+
+RATEL_E2E=1 \
+RATEL_CLOUD_ROOT=/path/to/ratel-cloud \
+RATEL_SDK_DIR=/path/to/ratel/src/sdk/ts \
+RATEL_E2E_DATABASE_URL=postgres://ratel:ratel@127.0.0.1:5432/ratel \
+RATEL_BASE_URL=http://127.0.0.1:3000/api/v1 \
+pnpm test
+```
+
+Use `pnpm run example:runtime-e2e` with the same environment to run only the harness. Without
+`RATEL_E2E=1`, the integration test is skipped so the normal `pnpm test` suite needs no sibling
+checkouts, database, or credentials.
+
 Set `RATEL_DEBUG=1` (either example) to also log every SDK request + response —
 `→ POST /intents/analyze` … `← 200 …` with the parsed body — so you can see
 exactly which endpoints are hit:

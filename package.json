@@ -19,6 +19,10 @@
     "./otel": {
       "types": "./dist/otel/index.d.ts",
       "default": "./dist/otel/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
     }
   },
   "license": "MIT",
@@ -61,12 +65,14 @@
     "lint": "biome check src",
     "test": "vitest run",
     "example:e2e": "node examples/e2e.mjs",
+    "example:runtime-e2e": "node examples/runtime-attach-e2e.mjs",
     "example:ui": "node examples/ui/server.mjs"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.3.0 <1.10.0",
     "@opentelemetry/exporter-trace-otlp-proto": ">=0.220.0 <1.0.0",
-    "@opentelemetry/sdk-trace-base": "^2.9.0"
+    "@opentelemetry/sdk-trace-base": "^2.9.0",
+    "@ratel-ai/sdk": ">=0.10.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
@@ -76,6 +82,9 @@
       "optional": true
     },
     "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@ratel-ai/sdk": {
       "optional": true
     }
   },

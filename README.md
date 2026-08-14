@@ -49,6 +49,106 @@ const cloud = new RatelCloudSdk({
 });
 ```
 
+## Runtime events and catalog snapshots
+
+Use the `/runtime` subpath to stream Ratel SDK runtime facts and publish its complete tool catalog.
+Set `RATEL_API_KEY`, then attach once after creating the Ratel runtime:
+
+```ts
+import { ratel } from "@ratel-ai/sdk";
+import * as ratelCloud from "@ratel-ai/cloud-sdk/runtime";
+
+const runtime = ratel();
+const cloudRuntime = ratelCloud.attach(runtime);
+```
+
+`attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
+remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
+process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
+requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
+against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
+
+`attach()` publishes an initial catalog snapshot and refreshes it after tool registration churn,
+debounced behind a quiet period with a max wait of four debounce windows so sustained churn
+cannot defer publication forever. Repeated calls with the same runtime return the same handle.
+`sourceId` defaults to the runtime's stable OTel `service.name`; override it only with another
+stable deployment identity (it is trimmed and truncated to 512 characters once, and both delivery
+lanes share the normalized value):
+
+```ts
+const cloudRuntime = ratelCloud.attach(runtime, { sourceId: "checkout-worker" });
+```
+
+Transient catalog failures remain queued and retry with an exponential backoff that keeps growing
+across consecutive failing cycles (capped at `maxBackoffMs`, honoring `Retry-After` on 429), and
+durable snapshots reconcile every five minutes. Deterministic payload rejects (HTTP 400/413/415)
+are surfaced once through `onRejected` and dropped instead of retrying. Tune the windows with
+`snapshotDebounceMs` and `snapshotReconcileIntervalMs`.
+
+Set `RATEL_CLOUD_EVENTS=off` before calling `attach()` to disable event delivery. Catalog snapshots
+remain enabled; the events publisher reads this kill switch once when the attachment is created.
+
+Delivery is fail-open and in memory. On long-running processes, call `close()` during final
+shutdown to unsubscribe and drain accepted work: nothing is sent after `close()` resolves, and
+envelopes the native queue delivers too late count as `dropped` in the delivery status. Awaited
+`flush()`/`close()` calls keep the process alive until their drain settles (even across a retry
+delay); background delivery timers never do. In serverless handlers, keep the attachment for
+warm invocations and explicitly `flush()` before each invocation ends:
+
+```ts
+export async function handler(request: Request) {
+  try {
+    return await handleRequest(request, runtime);
+  } finally {
+    await cloudRuntime.flush();
+  }
+}
+
+process.once("SIGTERM", () => void cloudRuntime.close());
+```
+
+Pass `onRejected` to observe terminal event delivery failures, Cloud event rejects, and catalog
+tools omitted by client-side snapshot limits. Snapshot publication matches Cloud's limits: 5,000
+tools and a 4,000,000-byte body; IDs/names are trimmed to 512 characters and descriptions to
+16,384 characters. A degraded `202 { synced: false }` remains pending and retries on a slow
+cadence (30 seconds — Cloud caches its ingest decision) until Cloud confirms a durable sync.
+
+### Runtime delivery observability
+
+The attachment exposes synchronous, JSON-serializable delivery health and an explicit preflight:
+
+```ts
+const result = await cloudRuntime.verify(); // POSTs { events: [] }; queues are untouched
+console.log(result);                        // { kind, status, message }
+console.log(cloudRuntime.status());         // { overall, events, snapshots }
+```
+
+`result.kind` and each last outcome are `ok`, `auth` (401), `gated` (3xx), `not_deployed`
+(404), `rate_limited` (429), `rejected_payload`, or `network`. Bearer-authenticated runtime
+requests never follow redirects, so a fronting auth gate remains visible as `gated`.
+
+`status().overall` is `pending` before confirmation, `blocked` for authentication, auth-gate, or
+missing-endpoint failures, `degraded` for rate limits, payload rejects, or network failures, and
+`ok` after current work is durable. It is `disabled` when `RATEL_CLOUD_EVENTS=off`. Event status
+includes Unix-millisecond attempt/accept timestamps, the last error, and cumulative accepted,
+rejected, and queue-dropped counters. Snapshot status is keyed by source id and includes
+`lastDurableAt`, `pendingSince`, and `lastOutcome`.
+
+By default, the first transition into each failing kind logs one warning; repeats stay quiet until
+that kind recovers. Use `warnOnFailure: false` to disable these warnings, or observe transitions
+without polling:
+
+```ts
+ratelCloud.attach(runtime, {
+  onStatusChange: (status) => healthGauge.set(status.overall),
+});
+```
+
+Status callbacks and diagnostics are fail-open: exceptions never escape into the agent.
+
+The cross-repository live acceptance test is opt-in with `RATEL_E2E=1`; see the
+[runtime attach E2E example](./examples/README.md#runtime-attach-e2emjs--live-runtime-attach-acceptance).
+
 Set `debug: true` to log every call — `→ GET /skills?status=published` on the way out, `← 200 …`
 with the parsed response body on the way back (the auth header is never logged). For structured
 logging, pass a `logger: (event: CloudSdkLogEvent) => void` sink instead (it takes precedence over
