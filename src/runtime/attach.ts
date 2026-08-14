@@ -1,6 +1,9 @@
 import type { RuntimeCatalogToolDefinition, RuntimeEvent } from "../types.js";
 import { RuntimeEventsPublisher, type RuntimeEventsPublisherOptions } from "./publisher.js";
+import { nonNegative } from "./retry.js";
 import { CatalogSnapshotsPublisher } from "./snapshots.js";
+
+const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 500;
 
 export interface RuntimeEventSubscription {
   readonly droppedCount: number;
@@ -44,6 +47,8 @@ export interface AttachOptions extends Omit<RuntimeEventsPublisherOptions, "apiK
   readonly sourceId?: string;
   /** Quiet period after catalog churn before publication. Defaults to 500 ms. */
   readonly snapshotDebounceMs?: number;
+  /** Maximum age of a durable catalog confirmation. Defaults to 5 minutes. */
+  readonly snapshotReconcileIntervalMs?: number;
 }
 
 export interface RuntimeAttachment {
@@ -77,6 +82,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     apiKey = process.env.RATEL_API_KEY ?? "",
     sourceId = runtime.events.sourceId,
     snapshotDebounceMs,
+    snapshotReconcileIntervalMs,
     ...delivery
   } = options;
   warnIfMissingApiKey(apiKey);
@@ -86,7 +92,10 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     ...(delivery.baseUrl === undefined ? {} : { baseUrl: delivery.baseUrl }),
     ...(delivery.fetch === undefined ? {} : { fetch: delivery.fetch }),
     ...(delivery.timeoutMs === undefined ? {} : { timeoutMs: delivery.timeoutMs }),
-    ...(snapshotDebounceMs === undefined ? {} : { debounceMs: snapshotDebounceMs }),
+    debounceMs: 0,
+    ...(snapshotReconcileIntervalMs === undefined
+      ? {}
+      : { reconcileIntervalMs: snapshotReconcileIntervalMs }),
     ...(delivery.retry === undefined ? {} : { retry: delivery.retry }),
     ...(delivery.sleep === undefined ? {} : { sleep: delivery.sleep }),
     ...(delivery.onRejected === undefined ? {} : { onRejected: delivery.onRejected }),
@@ -97,24 +106,44 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
       snapshots.publish({
         source_id: sourceId,
         tools: snapshot.tools.map(toCatalogTool),
-        ...(snapshot.skills === undefined ? {} : { skills: snapshot.skills }),
       });
     } catch {
       // Snapshot observation is optional and must never affect the host operation.
     }
   };
+  const debounceMs = nonNegative(snapshotDebounceMs, DEFAULT_SNAPSHOT_DEBOUNCE_MS);
+  let snapshotDirty = false;
+  let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushDirtySnapshot = (): void => {
+    if (snapshotTimer !== undefined) {
+      clearTimeout(snapshotTimer);
+      snapshotTimer = undefined;
+    }
+    if (!snapshotDirty) return;
+    snapshotDirty = false;
+    publishSnapshot();
+  };
+  const markSnapshotDirty = (): void => {
+    snapshotDirty = true;
+    if (snapshotTimer !== undefined) clearTimeout(snapshotTimer);
+    snapshotTimer = setTimeout(() => {
+      snapshotTimer = undefined;
+      flushDirtySnapshot();
+      void snapshots.flush();
+    }, debounceMs);
+    snapshotTimer.unref?.();
+  };
   const subscription = runtime.events.subscribe((batch) => {
     for (const event of batch) {
       publisher.publish(event.source_id === sourceId ? event : { ...event, source_id: sourceId });
     }
-    if (batch.some((event) => event.type === "index_churn" || event.type === "skill_churn")) {
-      publishSnapshot();
-    }
+    if (batch.some((event) => event.type === "index_churn")) markSnapshotDirty();
   });
-  publishSnapshot();
+  markSnapshotDirty();
 
   let closePromise: Promise<void> | undefined;
   const flushPublishers = async (): Promise<void> => {
+    flushDirtySnapshot();
     try {
       await Promise.all([publisher.flush(), snapshots.flush()]);
     } catch {
@@ -140,7 +169,11 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
           // Detach failures cannot escape into host shutdown.
         }
         ATTACHMENTS.delete(runtime);
-        await flushPublishers();
+        try {
+          await Promise.all([publisher.flush(), snapshots.close()]);
+        } catch {
+          // Publisher lifecycle is fail-open too.
+        }
       })();
       return closePromise;
     },

@@ -61,6 +61,100 @@ describe("attach", () => {
     ]);
   });
 
+  it("builds one catalog snapshot after a burst of tool churn", async () => {
+    vi.useFakeTimers();
+    const runtime = new FakeRuntime();
+    const snapshot = vi.spyOn(runtime.catalog, "snapshot");
+    try {
+      const handle = attach(runtime, {
+        apiKey: "rtl_test",
+        snapshotDebounceMs: 100,
+        fetch: (async () =>
+          Response.json({}, { headers: { ETag: '"published"' } })) as typeof fetch,
+      });
+
+      for (let index = 0; index < 100; index += 1) {
+        runtime.setTools([tool(`tool-${index}`)]);
+        runtime.emit({ ...EVENT, event_id: `churn-${index}`, type: "index_churn" });
+      }
+      await vi.advanceTimersByTimeAsync(99);
+      expect(snapshot).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(snapshot).toHaveBeenCalledOnce();
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for a quiet churn period before building the catalog snapshot", async () => {
+    vi.useFakeTimers();
+    const runtime = new FakeRuntime();
+    const snapshot = vi.spyOn(runtime.catalog, "snapshot");
+    try {
+      const handle = attach(runtime, {
+        apiKey: "rtl_test",
+        snapshotDebounceMs: 100,
+        fetch: (async () =>
+          Response.json({}, { headers: { ETag: '"published"' } })) as typeof fetch,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      runtime.emit({ ...EVENT, event_id: "churn", type: "index_churn" });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(snapshot).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(snapshot).toHaveBeenCalledOnce();
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not rebuild the tool snapshot for skill churn", async () => {
+    const runtime = new FakeRuntime();
+    const snapshot = vi.spyOn(runtime.catalog, "snapshot");
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      fetch: (async () => Response.json({}, { headers: { ETag: '"published"' } })) as typeof fetch,
+    });
+
+    await handle.flush();
+    runtime.emit({ ...EVENT, event_id: "skill-churn", type: "skill_churn" });
+    await handle.flush();
+
+    expect(snapshot).toHaveBeenCalledOnce();
+    await handle.close();
+  });
+
+  it("reconciles on the configured interval until the attachment closes", async () => {
+    vi.useFakeTimers();
+    let snapshots = 0;
+    try {
+      const handle = attach(new FakeRuntime(), {
+        apiKey: "rtl_test",
+        snapshotDebounceMs: 0,
+        snapshotReconcileIntervalMs: 100,
+        fetch: (async (input: RequestInfo | URL) => {
+          if (String(input).endsWith("/catalog/snapshot")) snapshots += 1;
+          return Response.json({}, { headers: { ETag: `"version-${snapshots}"` } });
+        }) as typeof fetch,
+      });
+
+      await handle.flush();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(snapshots).toBe(2);
+      await handle.close();
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(snapshots).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("surfaces terminal snapshot failures through the attachment rejection hook", async () => {
     const rejected: Array<{ eventId: string | null; reason: string }> = [];
     const handle = attach(new FakeRuntime(), {

@@ -63,13 +63,16 @@ const cloudRuntime = ratelCloud.attach(runtime);
 ```
 
 `attach()` subscribes to search, invocation, registration, and experiment facts. It publishes an
-initial catalog snapshot and refreshes it after tool or skill registration churn. Repeated calls
+initial catalog snapshot and refreshes it after tool registration churn. Repeated calls
 with the same runtime return the same handle. `sourceId` defaults to the runtime's stable OTel
 `service.name`; override it only with another stable deployment identity:
 
 ```ts
 const cloudRuntime = ratelCloud.attach(runtime, { sourceId: "checkout-worker" });
 ```
+
+Catalog failures remain queued with backoff, and durable snapshots reconcile every five minutes.
+Tune those windows with `snapshotDebounceMs` and `snapshotReconcileIntervalMs`.
 
 Set `RATEL_CLOUD_EVENTS=off` before calling `attach()` to disable event delivery. Catalog snapshots
 remain enabled; the events publisher reads this kill switch once when the attachment is created.
