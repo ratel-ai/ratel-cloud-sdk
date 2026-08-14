@@ -5,12 +5,14 @@ import type { RuntimeEventRejection, RuntimeEventsRetryOptions } from "./publish
 import {
   createRetryConfig,
   nonNegative,
+  positiveInteger,
   type RetryConfig,
   requestWithRetry,
   sleep,
 } from "./retry.js";
 
 const DEFAULT_DEBOUNCE_MS = 500;
+const DEFAULT_RECONCILE_INTERVAL_MS = 5 * 60_000;
 const CATALOG_SNAPSHOT_MAX_BYTES = 4_000_000;
 const CATALOG_SNAPSHOT_MAX_TOOLS = 5_000;
 const CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH = 512;
@@ -47,6 +49,8 @@ export interface CatalogSnapshotsPublisherOptions {
   readonly timeoutMs?: number;
   /** Quiet period after catalog churn before publishing. Defaults to 500 ms. */
   readonly debounceMs?: number;
+  /** Maximum age of a durable confirmation before republishing. Defaults to 5 minutes. */
+  readonly reconcileIntervalMs?: number;
   readonly retry?: RuntimeEventsRetryOptions;
   /** Called for tools omitted from a snapshot and terminal publication failures. */
   readonly onRejected?: (rejected: readonly RuntimeEventRejection[]) => void;
@@ -61,14 +65,19 @@ export class CatalogSnapshotsPublisher {
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
   readonly #debounceMs: number;
+  readonly #reconcileIntervalMs: number;
   readonly #retry: RetryConfig;
   readonly #sleep: (ms: number) => PromiseLike<void>;
   readonly #onRejected: ((rejected: readonly RuntimeEventRejection[]) => void) | undefined;
   readonly #acknowledgedHashes = new Map<string, string>();
+  readonly #reconcileAt = new Map<string, number>();
   readonly #inFlightHashes = new Map<string, string>();
+  readonly #latest = new Map<string, PendingCatalogSnapshot>();
   readonly #pending = new Map<string, PendingCatalogSnapshot>();
-  #timer: ReturnType<typeof setTimeout> | undefined;
+  #flushTimer: ReturnType<typeof setTimeout> | undefined;
+  #reconcileTimer: ReturnType<typeof setTimeout> | undefined;
   #draining: Promise<void> = Promise.resolve();
+  #closed = false;
 
   constructor(options: CatalogSnapshotsPublisherOptions) {
     this.#apiKey = options.apiKey;
@@ -76,31 +85,42 @@ export class CatalogSnapshotsPublisher {
     this.#fetch = options.fetch ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#debounceMs = nonNegative(options.debounceMs, DEFAULT_DEBOUNCE_MS);
+    this.#reconcileIntervalMs = positiveInteger(
+      options.reconcileIntervalMs,
+      DEFAULT_RECONCILE_INTERVAL_MS,
+    );
     this.#retry = createRetryConfig(options.retry);
     this.#sleep = options.sleep ?? sleep;
     this.#onRejected = options.onRejected;
   }
 
   publish(snapshot: RuntimeCatalogSnapshot): void {
+    if (this.#closed) return;
     try {
       const prepared = prepareSnapshot(snapshot);
       this.#surfaceRejections(prepared.rejected);
       const hash = hashCatalogSnapshot(prepared.snapshot);
       const sourceId = prepared.snapshot.source_id;
+      const next = {
+        body: prepared.body,
+        hash,
+        sourceId,
+      };
+      this.#latest.set(sourceId, next);
+      if (!this.#reconcileAt.has(sourceId)) {
+        this.#reconcileAt.set(sourceId, Date.now() + this.#reconcileIntervalMs);
+        this.#rescheduleReconcile();
+      }
       const inFlightHash = this.#inFlightHashes.get(sourceId);
       if (
         hash === inFlightHash ||
         (hash === this.#acknowledgedHashes.get(sourceId) && inFlightHash === undefined)
       ) {
         this.#pending.delete(sourceId);
-        if (this.#pending.size === 0) this.#clearTimer();
+        if (this.#pending.size === 0) this.#clearFlushTimer();
         return;
       }
-      this.#pending.set(sourceId, {
-        body: prepared.body,
-        hash,
-        sourceId,
-      });
+      this.#pending.set(sourceId, next);
       this.#scheduleFlush();
     } catch (error) {
       this.#surfaceRejections([
@@ -113,7 +133,7 @@ export class CatalogSnapshotsPublisher {
   }
 
   async flush(): Promise<void> {
-    this.#clearTimer();
+    this.#clearFlushTimer();
     const drain = this.#draining.then(
       () => this.#drainPending(),
       () => this.#drainPending(),
@@ -122,15 +142,23 @@ export class CatalogSnapshotsPublisher {
     await drain;
   }
 
+  async close(): Promise<void> {
+    this.#closed = true;
+    this.#clearFlushTimer();
+    this.#clearReconcileTimer();
+    await this.flush();
+  }
+
   async #drainPending(): Promise<void> {
-    const deferred = new Map<string, PendingCatalogSnapshot>();
+    const retryPending = new Map<string, PendingCatalogSnapshot>();
+    let retryWithBackoff = false;
     while (this.#pending.size > 0) {
-      this.#clearTimer();
+      this.#clearFlushTimer();
       const pendingSnapshots = [...this.#pending.values()];
       this.#pending.clear();
       for (const pending of pendingSnapshots) {
         const sourceId = pending.sourceId;
-        deferred.delete(sourceId);
+        retryPending.delete(sourceId);
         this.#inFlightHashes.set(sourceId, pending.hash);
         try {
           const response = await this.#send(pending.body);
@@ -141,13 +169,18 @@ export class CatalogSnapshotsPublisher {
                 reason: `catalog snapshot for ${sourceId} failed after retries`,
               },
             ]);
+            this.#restoreLatest(retryPending, pending);
+            retryWithBackoff = true;
             continue;
           }
           const outcome = await readPublishOutcome(response);
           if (outcome === "durable") {
             this.#acknowledgedHashes.set(sourceId, pending.hash);
-          } else if (outcome === "deferred" && !this.#pending.has(sourceId)) {
-            deferred.set(sourceId, pending);
+            const acknowledgedAt = Date.now();
+            this.#reconcileAt.set(sourceId, acknowledgedAt + this.#reconcileIntervalMs);
+            this.#rescheduleReconcile();
+          } else if (outcome === "deferred") {
+            this.#restoreLatest(retryPending, pending);
           } else if (outcome === "failed") {
             this.#surfaceRejections([
               {
@@ -155,6 +188,8 @@ export class CatalogSnapshotsPublisher {
                 reason: `catalog snapshot for ${sourceId} rejected with HTTP ${response.status}`,
               },
             ]);
+            this.#restoreLatest(retryPending, pending);
+            retryWithBackoff = true;
           }
         } catch (error) {
           this.#surfaceRejections([
@@ -163,6 +198,8 @@ export class CatalogSnapshotsPublisher {
               reason: `catalog snapshot for ${sourceId} failed: ${errorMessage(error)}`,
             },
           ]);
+          this.#restoreLatest(retryPending, pending);
+          retryWithBackoff = true;
         } finally {
           if (this.#inFlightHashes.get(sourceId) === pending.hash) {
             this.#inFlightHashes.delete(sourceId);
@@ -170,10 +207,21 @@ export class CatalogSnapshotsPublisher {
         }
       }
     }
-    for (const [sourceId, pending] of deferred) {
-      this.#pending.set(sourceId, pending);
+    for (const [sourceId, pending] of retryPending) {
+      if (!this.#pending.has(sourceId)) this.#pending.set(sourceId, pending);
     }
-    if (deferred.size > 0) this.#scheduleFlush();
+    if (this.#pending.size > 0) {
+      this.#scheduleFlush(retryWithBackoff ? this.#failureBackoffMs() : this.#debounceMs);
+    }
+  }
+
+  #restoreLatest(
+    retryPending: Map<string, PendingCatalogSnapshot>,
+    failed: PendingCatalogSnapshot,
+  ): void {
+    if (this.#pending.has(failed.sourceId)) return;
+    const latest = this.#latest.get(failed.sourceId);
+    if (latest?.hash === failed.hash) retryPending.set(failed.sourceId, latest);
   }
 
   async #send(body: string): Promise<Response | undefined> {
@@ -195,19 +243,69 @@ export class CatalogSnapshotsPublisher {
     );
   }
 
-  #scheduleFlush(): void {
-    this.#clearTimer();
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
+  #scheduleFlush(delayMs = this.#debounceMs): void {
+    if (this.#closed) return;
+    this.#clearFlushTimer();
+    this.#flushTimer = setTimeout(() => {
+      this.#flushTimer = undefined;
       void this.flush();
-    }, this.#debounceMs);
-    this.#timer.unref?.();
+    }, delayMs);
+    this.#flushTimer.unref?.();
   }
 
-  #clearTimer(): void {
-    if (this.#timer === undefined) return;
-    clearTimeout(this.#timer);
-    this.#timer = undefined;
+  #scheduleReconcile(): void {
+    if (this.#closed || this.#reconcileTimer !== undefined) return;
+    const nextAt = Math.min(...this.#reconcileAt.values());
+    if (!Number.isFinite(nextAt)) return;
+    this.#reconcileTimer = setTimeout(
+      () => {
+        this.#reconcileTimer = undefined;
+        this.#reconcile();
+      },
+      Math.max(0, nextAt - Date.now()),
+    );
+    this.#reconcileTimer.unref?.();
+  }
+
+  #reconcile(): void {
+    if (this.#closed) return;
+    const now = Date.now();
+    for (const [sourceId, latest] of this.#latest) {
+      if ((this.#reconcileAt.get(sourceId) ?? Number.POSITIVE_INFINITY) > now) continue;
+      this.#reconcileAt.set(sourceId, now + this.#reconcileIntervalMs);
+      if (this.#inFlightHashes.get(sourceId) === latest.hash || this.#pending.has(sourceId))
+        continue;
+      this.#pending.set(sourceId, latest);
+    }
+    if (this.#pending.size > 0) void this.flush();
+    this.#scheduleReconcile();
+  }
+
+  #rescheduleReconcile(): void {
+    this.#clearReconcileTimer();
+    this.#scheduleReconcile();
+  }
+
+  #failureBackoffMs(): number {
+    return Math.max(
+      this.#debounceMs,
+      Math.min(
+        this.#retry.initialBackoffMs * 2 ** (this.#retry.maxAttempts - 1),
+        this.#retry.maxBackoffMs,
+      ),
+    );
+  }
+
+  #clearFlushTimer(): void {
+    if (this.#flushTimer === undefined) return;
+    clearTimeout(this.#flushTimer);
+    this.#flushTimer = undefined;
+  }
+
+  #clearReconcileTimer(): void {
+    if (this.#reconcileTimer === undefined) return;
+    clearTimeout(this.#reconcileTimer);
+    this.#reconcileTimer = undefined;
   }
 
   #surfaceRejections(rejected: readonly RuntimeEventRejection[]): void {

@@ -116,6 +116,89 @@ describe("CatalogSnapshotsPublisher", () => {
     expect(requests).toBe(2);
   });
 
+  it("publishes an unchanged startup snapshot after the network recovers", async () => {
+    vi.useFakeTimers();
+    let online = false;
+    const bodies: unknown[] = [];
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 10,
+        reconcileIntervalMs: 5 * 60_000,
+        fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+          if (!online) throw new Error("offline");
+          bodies.push(JSON.parse(String(init?.body)));
+          return Response.json({}, { headers: { ETag: '"published"' } });
+        }) as typeof fetch,
+        retry: { maxAttempts: 1, initialBackoffMs: 100, maxBackoffMs: 100 },
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+      online = true;
+      await vi.advanceTimersByTimeAsync(99);
+      expect(bodies).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(bodies).toEqual([{ source_id: "worker-a", tools: [wireTool("weather")] }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("periodically republishes snapshots whose confirmation is stale", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 10,
+        reconcileIntervalMs: 100,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({}, { headers: { ETag: `"version-${requests}"` } });
+        }) as typeof fetch,
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await publisher.flush();
+      await vi.advanceTimersByTimeAsync(99);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(requests).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconciles one interval after a delayed durable confirmation", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    try {
+      const publisher = new CatalogSnapshotsPublisher({
+        apiKey: "rtl_test",
+        debounceMs: 50,
+        reconcileIntervalMs: 100,
+        fetch: (async () => {
+          requests += 1;
+          return Response.json({}, { headers: { ETag: `"version-${requests}"` } });
+        }) as typeof fetch,
+      });
+
+      publisher.publish({ source_id: "worker-a", tools: [tool("weather")] });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(99);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(requests).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("normalizes string limits and reports tools beyond the 5,000-tool cap", async () => {
     let body = "";
     const rejected: Array<{ eventId: string | null; reason: string }> = [];
@@ -404,6 +487,35 @@ describe("CatalogSnapshotsPublisher", () => {
     await Promise.all([firstFlush, secondFlush]);
     expect(requests).toHaveLength(2);
     expect(requests[1]?.headers).not.toHaveProperty("if-match");
+  });
+
+  it("does not restore a failed snapshot over a newer pending replacement", async () => {
+    const publishedToolIds: string[][] = [];
+    let rejectFirst: ((error: Error) => void) | undefined;
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      retry: { maxAttempts: 1 },
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { tools: Array<{ id: string }> };
+        publishedToolIds.push(body.tools.map(({ id }) => id));
+        if (publishedToolIds.length === 1) {
+          return await new Promise<Response>((_resolve, reject) => {
+            rejectFirst = reject;
+          });
+        }
+        return Response.json({}, { headers: { ETag: '"latest"' } });
+      }) as typeof fetch,
+    });
+
+    publisher.publish({ source_id: "worker-a", tools: [tool("old")] });
+    const flush = publisher.flush();
+    await vi.waitFor(() => expect(publishedToolIds).toEqual([["old"]]));
+    publisher.publish({ source_id: "worker-a", tools: [tool("new")] });
+    rejectFirst?.(new Error("offline"));
+    await flush;
+    await publisher.flush();
+
+    expect(publishedToolIds).toEqual([["old"], ["new"]]);
   });
 
   it("publishes a revert when a different snapshot is still in flight", async () => {
