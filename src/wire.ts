@@ -1,18 +1,15 @@
 /**
- * The frozen `protocol/v1` canonicalization, scope-overlay, and conditional-GET
- * matcher — a faithful, dependency-free port of the reference verifier
- * (`protocol/v1/conformance/verify.mjs` in the ratel repo; the text spec in
- * `protocol/v1/README.md` is normative). Pure string/byte functions only: the
- * SHA-256 that turns canonical bytes into an ETag is intentionally NOT here, so
- * this module runs on any runtime. `wire.test.ts` pins conformance against the
- * vendored vectors byte-for-byte.
+ * Frozen `protocol/v1` and `protocol/v2` canonicalization, scope-overlay, and
+ * conditional-GET matching. These are faithful, dependency-free ports of the
+ * protocol reference verifiers. Pure string/byte functions only: the SHA-256
+ * that turns canonical bytes into an ETag is intentionally NOT here, so this
+ * module runs on any runtime. Tests pin both versions against vendored vectors.
  *
- * Anything that changes the bytes — field set, order, canonicalization, the
- * resolve/overlay rule — is a breaking protocol change (a `/v2` event), not a
- * local refactor.
+ * Anything that changes a version's bytes — field set, order, canonicalization,
+ * or resolve/overlay rule — requires a new protocol version.
  */
 
-import type { Catalog, WireSkill } from "./types.js";
+import type { Catalog, CatalogV2, WireSkill, WireSkillV2 } from "./types.js";
 
 const encoder = new TextEncoder();
 
@@ -43,13 +40,30 @@ export function canonicalSkill(skill: WireSkill): string {
   );
 }
 
-function sortById(skills: WireSkill[]): WireSkill[] {
+/** Protocol/v2 canonical JSON. Unset overrides have the single representation `null`. */
+export function canonicalSkillV2(skill: WireSkillV2): string {
+  const s = JSON.stringify;
+  const metaKeys = Object.keys(skill.metadata ?? {}).sort(byteCompare);
+  const meta = `{${metaKeys.map((k) => `${s(k)}:${s(skill.metadata[k])}`).join(",")}}`;
+  return (
+    `{"id":${s(skill.id)},"name":${s(skill.name)},"description":${s(skill.description)}` +
+    `,"searchableDescription":${s(skill.searchableDescription ?? null)}` +
+    `,"tags":${s(skill.tags)},"tools":${s(skill.tools)},"metadata":${meta},"body":${s(skill.body)}}`
+  );
+}
+
+function sortById<T extends Pick<WireSkill, "id">>(skills: T[]): T[] {
   return [...skills].sort((a, b) => byteCompare(a.id, b.id));
 }
 
 /** Canonical bytes for a resolved set: sorted by id, compact JSON array. */
 export function canonicalSet(skills: WireSkill[]): string {
   return `[${sortById(skills).map(canonicalSkill).join(",")}]`;
+}
+
+/** Protocol/v2 canonical bytes for a resolved set. */
+export function canonicalSetV2(skills: WireSkillV2[]): string {
+  return `[${sortById(skills).map(canonicalSkillV2).join(",")}]`;
 }
 
 /**
@@ -64,6 +78,17 @@ export function resolve(catalog: Catalog, scope: string | null | undefined): Wir
   const byName = new Map<string, WireSkill>();
   for (const sk of global) byName.set(sk.name, sk);
   for (const sk of layer) byName.set(sk.name, sk);
+  return sortById([...byName.values()]);
+}
+
+/** Resolve a protocol/v2 source catalog using the unchanged scope-overlay rule. */
+export function resolveV2(catalog: CatalogV2, scope: string | null | undefined): WireSkillV2[] {
+  const global = catalog.global ?? [];
+  if (scope == null) return sortById(global);
+  const layer = catalog.subjects?.[scope] ?? [];
+  const byName = new Map<string, WireSkillV2>();
+  for (const skill of global) byName.set(skill.name, skill);
+  for (const skill of layer) byName.set(skill.name, skill);
   return sortById([...byName.values()]);
 }
 
