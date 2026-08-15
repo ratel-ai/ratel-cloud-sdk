@@ -344,6 +344,7 @@ export class MockCloud {
       }
       const same =
         existing.description === input.description &&
+        existing.searchableDescription === (input.searchableDescription ?? null) &&
         existing.body === input.body &&
         JSON.stringify(existing.tags) === JSON.stringify(input.tags ?? []) &&
         JSON.stringify(existing.tools) === JSON.stringify(input.tools ?? []);
@@ -352,6 +353,7 @@ export class MockCloud {
       } else {
         Object.assign(existing, {
           description: input.description,
+          searchableDescription: input.searchableDescription ?? null,
           body: input.body,
           tags: input.tags ?? [],
           tools: input.tools ?? [],

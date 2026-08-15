@@ -157,6 +157,29 @@ describe("SkillsClient", () => {
     expect(report).toEqual({ created: ["fresh"], updated: ["change"], unchanged: ["keep"] });
   });
 
+  it("import reports an override-only edit as updated", async () => {
+    const { sdk } = makeSdk();
+    const existing = await sdk.skills.create({
+      name: "deploy-checklist",
+      description: "How to deploy safely.",
+      body: "# Deploy",
+    });
+
+    const report = await sdk.skills.import([
+      {
+        name: existing.name,
+        description: existing.description,
+        searchableDescription: "release production rollback canary",
+        body: existing.body,
+      },
+    ]);
+
+    expect(report).toEqual({ created: [], updated: [existing.name], unchanged: [] });
+    const updated = await sdk.skills.get(existing.id);
+    expect(updated.searchableDescription).toBe("release production rollback canary");
+    expect(updated.version).toBe(existing.version + 1);
+  });
+
   it("get of an unknown id maps to not_found", async () => {
     const { sdk } = makeSdk();
     await expect(sdk.skills.get("sk_missing")).rejects.toMatchObject({
