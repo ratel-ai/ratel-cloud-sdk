@@ -42,4 +42,12 @@ export {
   Transport,
 } from "./transport.js";
 export * from "./types.js";
-export { canonicalSet, canonicalSkill, ifNoneMatchMatches, resolve } from "./wire.js";
+export {
+  canonicalSet,
+  canonicalSetV2,
+  canonicalSkill,
+  canonicalSkillV2,
+  ifNoneMatchMatches,
+  resolve,
+  resolveV2,
+} from "./wire.js";

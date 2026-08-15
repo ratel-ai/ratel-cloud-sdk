@@ -19,6 +19,7 @@ const cloud = new RatelCloudSdk({ apiKey: process.env.RATEL_API_KEY! });
 const skill = await cloud.skills.create({
   name: "deploy-checklist",
   description: "How to deploy safely.",
+  searchableDescription: "release production rollback canary", // optional retrieval override
   body: "# Deploy\n…",
 });
 await cloud.skills.publish(skill.id, { expectedVersion: skill.version });
@@ -206,6 +207,7 @@ project (the server does not distinguish).
 const skill = await cloud.skills.create({
   name: "rotate-db-credentials",       // kebab-case, unique among non-archived skills
   description: "Rotate database credentials without downtime.",
+  searchableDescription: "rotate secrets keys credentials", // optional; null/omitted = description
   body: "# Rotation\n…",
   tags: ["ops"],                       // optional, default []
   tools: ["psql"],                     // optional, default []
@@ -230,6 +232,7 @@ const next = await cloud.skills.update(skill.id, {
   expectedVersion: skill.version,      // guard the edit against concurrent writes
   body: "# Rotation (v2)\n…",
   name: "rotate-credentials",          // renames are allowed
+  searchableDescription: null,         // clear the retrieval override
 });
 
 await cloud.skills.update(skill.id, { tags: ["ops"] }); // unguarded: applies unconditionally
@@ -253,15 +256,23 @@ Bulk **upsert-by-name** for onboarding an existing skill set — e.g. syncing fr
 application already manages:
 
 ```ts
-const rows = await db.query("SELECT name, description, body, tags FROM playbooks");
+const rows = await db.query(
+  "SELECT name, description, searchable_description, body, tags FROM playbooks",
+);
 const report = await cloud.skills.import(
-  rows.map((r) => ({ name: r.name, description: r.description, body: r.body, tags: r.tags })),
+  rows.map((r) => ({
+    name: r.name,
+    description: r.description,
+    searchableDescription: r.searchable_description,
+    body: r.body,
+    tags: r.tags,
+  })),
 );
 // → { created: ["deploy-checklist"], updated: ["rotate-db-credentials"], unchanged: [] }
 ```
 
 - Matching is by `name` against non-archived skills; content comparison decides
-  `updated` vs `unchanged`, so re-running an import is idempotent.
+  `updated` vs `unchanged`, including override-only edits, so re-running an import is idempotent.
 - Import **never archives**: a skill that exists in cloud but not in your input is left alone.
   Cloud is the source of truth — removal is an explicit `archive` call.
 - Imported updates bump versions like any other edit; concurrent editors will see
@@ -676,10 +687,10 @@ or each span becomes its own root trace.
 
 Your application's test suite shouldn't need a live API key, network access, or quota.
 `@ratel-ai/cloud-sdk/testing` (Node-only) ships `MockCloud` — an in-process, fetch-compatible
-mock of the whole v1 surface, the same one this SDK's own test suite runs against. Routes,
-status codes, and error bodies mirror the server, which matters most for the failure modes you
-can't provoke against production on demand: version races, review races, auth errors — all the
-error-handling paths documented above become three-line test cases.
+mock of the v1 management surface plus both catalog pull versions, the same one this SDK's own
+test suite runs against. Routes, status codes, and error bodies mirror the server, which matters
+most for the failure modes you can't provoke against production on demand: version races, review
+races, auth errors — all the error-handling paths documented above become three-line test cases.
 
 ```ts
 import { RatelCloudSdk, CloudSdkError } from "@ratel-ai/cloud-sdk";
@@ -705,8 +716,9 @@ What to know when asserting against it:
 
 - Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
   real API.
-- The mock's `GET /catalog` route (the loader's read path) computes ETags with the real
-  `protocol/v1` canonicalization, so loader-side integration tests behave faithfully too.
+- The mock serves `GET /v1/catalog` and `GET /v2/catalog` (including `/api/…` aliases) with
+  their frozen seven- and eight-field ETags. v1 omits `searchableDescription`; v2 emits it and
+  canonicalizes unset overrides to `null`.
 - The intent **extraction** is a deterministic fixture, not the server pipeline: one intent per
   unique `user` message, covered iff some published skill's name tokens all appear in the
   message text. Don't assert on extraction quality — assert on your handling of the results.
@@ -717,18 +729,22 @@ What to know when asserting against it:
 
 ## Protocol conformance
 
-The catalog wire shape and ETag algorithm are the frozen `protocol/v1` contract. This package
-vendors the protocol's conformance vectors and reproduces them byte-for-byte in `wire.test.ts`.
-The pure canonicalization helpers are exported for tools that need to compute or verify catalog
-identity themselves:
+The catalog wire shapes and ETag algorithms are the frozen `protocol/v1` and `protocol/v2`
+contracts. This package vendors both protocols' conformance vectors and reproduces them
+byte-for-byte. The pure canonicalization helpers are exported for tools that need to compute or
+verify catalog identity themselves:
 
 ```ts
-import { canonicalSet, resolve, ifNoneMatchMatches } from "@ratel-ai/cloud-sdk";
+import {
+  canonicalSetV2,
+  resolveV2,
+  ifNoneMatchMatches,
+} from "@ratel-ai/cloud-sdk";
 import { createHash } from "node:crypto";
 
-const skills = resolve(catalog, "user-123");            // overlay a scope on the global layer
+const skills = resolveV2(catalog, "user-123");          // overlay a scope on the global layer
 const etagHex = createHash("sha256")
-  .update(canonicalSet(skills), "utf8")
+  .update(canonicalSetV2(skills), "utf8")
   .digest("hex");                                       // == the server's catalogVersion
 ifNoneMatchMatches(`"${etagHex}"`, currentEtag);        // RFC 7232 weak comparison
 ```

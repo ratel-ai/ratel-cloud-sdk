@@ -1,12 +1,12 @@
 /**
- * Wire types for the Ratel Cloud v1 API.
+ * Wire types for the Ratel Cloud APIs.
  *
  * The shapes here mirror the server serializers in ratel-cloud
  * (`lib/catalog/wire.ts`, `lib/catalog/http.ts` `serializeSkill`,
  * `lib/suggestions/http.ts` `serializeSuggestion`) field-for-field. The catalog
- * wire shape and its ETag algorithm are the frozen `protocol/v1` contract —
- * changing them is a protocol event, not a refactor; conformance is pinned by
- * `wire.test.ts` against the vendored vectors.
+ * wire shapes and their ETag algorithms are frozen protocol contracts;
+ * conformance is pinned by `wire.test.ts` and `wire-v2.test.ts` against the
+ * vendored vectors.
  */
 
 /* — protocol/v1 catalog wire ————————————————————————————————————————————— */
@@ -43,6 +43,37 @@ export interface Catalog {
 export interface CatalogResponse {
   catalogVersion: string;
   skills: WireSkill[];
+}
+
+/* — protocol/v2 catalog wire ————————————————————————————————————————————— */
+
+/** The frozen v2 content projection: v1 plus the retrieval override. */
+export const V2_SKILL_FIELDS = [
+  "id",
+  "name",
+  "description",
+  "searchableDescription",
+  "tags",
+  "tools",
+  "metadata",
+  "body",
+] as const;
+
+/** One skill on the v2 wire. Omitted and null overrides are semantically unset. */
+export interface WireSkillV2 extends WireSkill {
+  searchableDescription?: string | null;
+}
+
+/** A source-side v2 catalog: a global layer + optional per-subject layers. */
+export interface CatalogV2 {
+  global: WireSkillV2[];
+  subjects?: Record<string, WireSkillV2[]>;
+}
+
+/** The `GET /v2/catalog` 200 body. */
+export interface CatalogResponseV2 {
+  catalogVersion: string;
+  skills: WireSkillV2[];
 }
 
 /* — runtime events envelope/v2 ——————————————————————————————————————————— */
