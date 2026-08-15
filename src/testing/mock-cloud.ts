@@ -98,7 +98,7 @@ export class MockCloud {
   }
 
   private insertSkill(
-    wire: Omit<WireSkill, "id"> & { id?: string },
+    wire: Omit<WireSkill, "id"> & { id?: string; searchableDescription?: string | null },
     endUserId: string | null,
     status: SkillStatus,
   ): CloudSkill {
@@ -107,6 +107,7 @@ export class MockCloud {
       id: wire.id ?? this.nextId("sk"),
       name: wire.name,
       description: wire.description,
+      searchableDescription: wire.searchableDescription ?? null,
       tags: wire.tags ?? [],
       tools: wire.tools ?? [],
       metadata: wire.metadata ?? {},

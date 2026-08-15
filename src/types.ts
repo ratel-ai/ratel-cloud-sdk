@@ -92,6 +92,8 @@ export interface CloudSkill {
   id: string;
   name: string;
   description: string;
+  /** Optional retrieval override; null means index the model-facing description. */
+  searchableDescription: string | null;
   tags: string[];
   tools: string[];
   metadata: Record<string, string[]>;
@@ -112,6 +114,8 @@ export interface CloudSkill {
 export interface NewSkillInput {
   name: string;
   description: string;
+  /** Optional retrieval override; null or omitted uses `description`. */
+  searchableDescription?: string | null;
   body: string;
   tags?: string[];
   tools?: string[];
@@ -126,6 +130,8 @@ export interface UpdateSkillInput {
   expectedVersion?: number;
   name?: string;
   description?: string;
+  /** Set a retrieval override, or clear it with null. */
+  searchableDescription?: string | null;
   body?: string;
   tags?: string[];
   tools?: string[];
