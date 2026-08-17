@@ -177,6 +177,34 @@ at your discretion. A request that never gets a response (DNS failure, abort, ti
 
 ## API reference
 
+### `cloud.runtimeCatalog` — pull runtime-catalog overrides
+
+Cloud never changes live registrations automatically. Pull the operator-authored overrides, then
+re-register your local definitions with the matching searchable descriptions:
+
+```ts
+const { overrides } = await cloud.runtimeCatalog.listOverrides();
+const toolOverrides = new Map(
+  overrides
+    .filter((override) => override.kind === "tool")
+    .map((override) => [override.entryId, override.searchableDescription]),
+);
+
+for (const definition of toolDefinitions) {
+  const searchableDescription = toolOverrides.get(definition.id);
+  await runtime.tools.register({
+    ...definition,
+    ...(searchableDescription === undefined ? {} : { searchableDescription }),
+  });
+}
+```
+
+`listOverrides()` calls the Bearer-authenticated runtime-catalog endpoint (public wire path:
+`GET /v1/runtime-catalog/overrides`) and returns `{ overrides: RuntimeCatalogOverride[] }`, sorted
+by `kind` then `entryId`. Each override has `kind: "tool" | "skill" | "fact"`, `entryId`, and
+`searchableDescription`. Only entries with an operator override are returned; an invalid project
+key throws `unauthorized`.
+
 ### `cloud.skills` — managed-catalog write surface
 
 Skills live in one project and move through `draft → published → archived`. Every mutation
@@ -710,12 +738,22 @@ const cloud = new RatelCloudSdk({ apiKey: mock.apiKey, fetch: mock.fetch });
 // State is inspectable for assertions:
 mock.skills;        // Map<id, CloudSkill>
 mock.suggestions;   // Map<id, CloudSuggestion>
+
+// Runtime-catalog overrides can be seeded and cleared without a live Cloud:
+mock.seedRuntimeCatalogOverride({
+  kind: "tool",
+  entryId: "weather_lookup",
+  searchableDescription: "Current weather and forecasts.",
+});
+mock.clearRuntimeCatalogOverrides();
 ```
 
 What to know when asserting against it:
 
 - Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
   real API.
+- Runtime-catalog overrides are served sorted by `kind` then `entryId`, matching the real pull
+  endpoint.
 - The mock serves `GET /v1/catalog` and `GET /v2/catalog` (including `/api/…` aliases) with
   their frozen seven- and eight-field ETags. v1 omits `searchableDescription`; v2 emits it and
   canonicalizes unset overrides to `null`.

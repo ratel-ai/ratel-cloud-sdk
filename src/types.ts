@@ -113,6 +113,22 @@ export interface RuntimeCatalogSnapshot {
   readonly skills?: readonly unknown[];
 }
 
+/* — runtime catalog overrides ———————————————————————————————————————————— */
+
+export type RuntimeCatalogEntryKind = "tool" | "skill" | "fact";
+
+/** One operator-authored retrieval override for a runtime catalog entry. */
+export interface RuntimeCatalogOverride {
+  kind: RuntimeCatalogEntryKind;
+  entryId: string;
+  searchableDescription: string;
+}
+
+/** The `GET /runtime-catalog/overrides` response. */
+export interface RuntimeCatalogOverridesResponse {
+  overrides: RuntimeCatalogOverride[];
+}
+
 /* — managed skills (write surface) ——————————————————————————————————————— */
 
 export const SKILL_STATUSES = ["draft", "published", "archived"] as const;

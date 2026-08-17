@@ -10,6 +10,7 @@ import type {
   ImportReport,
   NewSkillInput,
   NewSkillPatch,
+  RuntimeCatalogOverride,
   SkillStatus,
   SuggestionStatus,
   SuggestionType,
@@ -79,6 +80,7 @@ export class MockCloud {
   private readonly queryIntents = new Map<string, QueryIntentRow>();
   /** Async jobs, keyed by id. */
   private readonly jobs = new Map<string, JobRow>();
+  private readonly runtimeCatalogOverrides = new Map<string, RuntimeCatalogOverride>();
 
   constructor(options: MockCloudOptions = {}) {
     this.apiKey = options.apiKey ?? "rtl_test_key";
@@ -87,6 +89,16 @@ export class MockCloud {
     for (const partial of options.suggestions ?? []) this.seedSuggestion(partial);
     this.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
       Promise.resolve(this.handle(input, init))) as typeof fetch;
+  }
+
+  /** Seed or replace one runtime-catalog override. */
+  seedRuntimeCatalogOverride(override: RuntimeCatalogOverride): void {
+    this.runtimeCatalogOverrides.set(runtimeCatalogOverrideKey(override), { ...override });
+  }
+
+  /** Remove every seeded runtime-catalog override. */
+  clearRuntimeCatalogOverrides(): void {
+    this.runtimeCatalogOverrides.clear();
   }
 
   private nextId(prefix: string): string {
@@ -181,12 +193,16 @@ export class MockCloud {
       return this.getCatalog(url, headers, catalogVersion);
     }
 
-    // Accept any base prefix; route management calls after "/api/v1".
-    const path = url.pathname.replace(/^.*?\/api\/v1/, "") || url.pathname;
+    // Accept both the public "/v1" contract and the "/api/v1" application route.
+    const path = url.pathname.replace(/^.*?\/(?:api\/)?v1/, "") || url.pathname;
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     const seg = path.split("/").filter(Boolean);
 
     if (path === "/skills" && method === "GET") return this.listSkills(url);
+    if (path === "/runtime-catalog/overrides" && method === "GET") {
+      const overrides = [...this.runtimeCatalogOverrides.values()].sort(compareRuntimeOverrides);
+      return Response.json({ overrides });
+    }
     if (path === "/skills" && method === "POST")
       return this.createSkill(body as unknown as NewSkillInput);
     if (path === "/skills/import" && method === "POST")
@@ -687,4 +703,14 @@ function catalogVersionFromPath(pathname: string): 1 | 2 | null {
   if (match?.[1] === "1") return 1;
   if (match?.[1] === "2") return 2;
   return null;
+}
+
+function runtimeCatalogOverrideKey(override: RuntimeCatalogOverride): string {
+  return `${override.kind}\0${override.entryId}`;
+}
+
+function compareRuntimeOverrides(a: RuntimeCatalogOverride, b: RuntimeCatalogOverride): number {
+  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  if (a.entryId === b.entryId) return 0;
+  return a.entryId < b.entryId ? -1 : 1;
 }
