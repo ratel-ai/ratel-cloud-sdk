@@ -70,6 +70,10 @@ and facts through the core SDK. Definition events emitted after adoption carry
 that remains locally owned. Omit the flag (or set it to false) to keep local
 `searchableDescription` values authoritative and make no overlay request.
 
+Cloud definitions require `@ratel-ai/sdk` >= 0.12.0. Versions 0.10.x and 0.11.x remain supported
+for runtime events and catalog snapshots, but using this flag warns once and keeps local Retrieval
+descriptions active.
+
 The initial pull is fail-open and runs in the background because `attach()` remains synchronous.
 `flush()` and `close()` await it. For later pulls, call
 `cloudRuntime.refreshCloudDefinitions()`; it sends the last strong ETag, treats a `304` as a no-op,

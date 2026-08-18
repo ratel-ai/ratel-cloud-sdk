@@ -63,6 +63,62 @@ describe("attach", () => {
     await handle.close();
   });
 
+  it("warns once while Cloud definition pulls keep failing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const runtime = new CloudDefinitionsRuntime();
+    let overrideRequests = 0;
+    const handle = attach(runtime, {
+      apiKey: "invalid",
+      fetch: (async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/runtime-catalog/overrides")) {
+          overrideRequests += 1;
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+        return Response.json({ synced: true }, { status: 202 });
+      }) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      useCloudDefinitions: true,
+    });
+
+    try {
+      await handle.flush();
+      await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+
+      expect(overrideRequests).toBe(2);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] cloud_definitions: Ratel Cloud request failed: 401 unauthorized — local Retrieval descriptions remain active",
+      );
+    } finally {
+      await handle.close();
+      warn.mockRestore();
+    }
+  });
+
+  it("names the minimum SDK version when Cloud definitions are unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handle = attach(new FakeRuntime(), {
+      apiKey: "rtl_test",
+      fetch: (async () => Response.json({ synced: true }, { status: 202 })) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      useCloudDefinitions: true,
+      warnOnFailure: false,
+    });
+
+    try {
+      await handle.flush();
+
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] version_skew: Cloud definitions require @ratel-ai/sdk >=0.12.0 — local Retrieval descriptions remain active",
+      );
+      await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+    } finally {
+      await handle.close();
+      warn.mockRestore();
+    }
+  });
+
   it("does not inspect or pull the Cloud definitions seam when the flag is omitted", async () => {
     const runtime = new CloudDefinitionsRuntime();
     const attachCloudDefinitions = vi.spyOn(runtime.catalog, "attachCloudDefinitions");

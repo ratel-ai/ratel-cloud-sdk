@@ -69,7 +69,7 @@ export interface AttachOptions
   readonly onStatusChange?: (status: RuntimeDeliveryStatus) => void;
   /** Emit one warning per failing kind until it recovers. Defaults to true. */
   readonly warnOnFailure?: boolean;
-  /** Give Cloud ownership of Retrieval descriptions. Defaults to false. */
+  /** Give Cloud ownership of Retrieval descriptions. Requires `@ratel-ai/sdk` >= 0.12.0. */
   readonly useCloudDefinitions?: boolean;
 }
 
@@ -228,7 +228,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     if (batch.some((event) => event.type === "index_churn")) markSnapshotDirty();
   });
   markSnapshotDirty();
-  const cloudDefinitions = new CloudDefinitionsController(runtime.catalog);
+  const cloudDefinitions = new CloudDefinitionsController(runtime.catalog, warnOnFailure ?? true);
 
   let closePromise: Promise<void> | undefined;
   const flushPublishers = async (): Promise<void> => {
@@ -288,13 +288,16 @@ const CLOUD_DEFINITION_CONTROLLERS = new WeakMap<object, CloudDefinitionsControl
 
 class CloudDefinitionsController {
   readonly #catalog: RatelRuntimeCatalog;
+  readonly #warnOnFailure: boolean;
   #source: CloudDefinitionsOverlaySource | undefined;
   #attachment: CloudDefinitionsAttachment | undefined;
   #attaching: Promise<CloudDefinitionsAttachment | undefined> | undefined;
   #closed = false;
+  #warningActive = false;
 
-  constructor(catalog: RatelRuntimeCatalog) {
+  constructor(catalog: RatelRuntimeCatalog, warnOnFailure: boolean) {
     this.#catalog = catalog;
+    this.#warnOnFailure = warnOnFailure;
   }
 
   get enabled(): boolean {
@@ -318,8 +321,11 @@ class CloudDefinitionsController {
     if (attachment === undefined) return false;
     if (!wasAttached) return true;
     try {
-      return await attachment.refresh();
-    } catch {
+      const changed = await attachment.refresh();
+      this.#warningActive = false;
+      return changed;
+    } catch (error) {
+      this.#warn(error);
       return false;
     }
   }
@@ -340,13 +346,30 @@ class CloudDefinitionsController {
       .call(this.#catalog, { useCloudDefinitions: true, source: this.#source })
       .then((attachment) => {
         this.#attachment = attachment;
+        this.#warningActive = false;
         return attachment;
       })
-      .catch(() => undefined)
+      .catch((error) => {
+        this.#warn(error);
+        return undefined;
+      })
       .finally(() => {
         this.#attaching = undefined;
       });
     return this.#attaching;
+  }
+
+  #warn(error: unknown): void {
+    if (!this.#warnOnFailure || this.#warningActive) return;
+    this.#warningActive = true;
+    try {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[ratel-cloud-sdk/runtime] cloud_definitions: ${message} — local Retrieval descriptions remain active`,
+      );
+    } catch {
+      // Console diagnostics remain fail-open.
+    }
   }
 }
 
@@ -388,7 +411,7 @@ function warnMissingCloudDefinitionsOnce(): void {
   warnedMissingCloudDefinitions = true;
   try {
     console.warn(
-      "[ratel-cloud-sdk/runtime] version_skew: this @ratel-ai/sdk runtime cannot attach Cloud definitions — upgrade @ratel-ai/sdk",
+      "[ratel-cloud-sdk/runtime] version_skew: Cloud definitions require @ratel-ai/sdk >=0.12.0 — local Retrieval descriptions remain active",
     );
   } catch {
     // Console diagnostics remain fail-open.
