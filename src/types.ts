@@ -47,7 +47,7 @@ export interface CatalogResponse {
 
 /* — protocol/v2 catalog wire ————————————————————————————————————————————— */
 
-/** The frozen v2 content projection: v1 plus the retrieval override. */
+/** The frozen v2 content projection: v1 plus the Retrieval description. */
 export const V2_SKILL_FIELDS = [
   "id",
   "name",
@@ -117,7 +117,7 @@ export interface RuntimeCatalogSnapshot {
 
 export type RuntimeCatalogEntryKind = "tool" | "skill" | "fact";
 
-/** One operator-authored retrieval override for a runtime catalog entry. */
+/** One operator-authored Retrieval description for a runtime catalog entry. */
 export interface RuntimeCatalogOverride {
   kind: RuntimeCatalogEntryKind;
   entryId: string;
@@ -161,7 +161,7 @@ export interface CloudSkill {
   id: string;
   name: string;
   description: string;
-  /** Optional retrieval override; null means index the model-facing description. */
+  /** Optional Retrieval description; null means index the model-facing description. */
   searchableDescription: string | null;
   tags: string[];
   tools: string[];
@@ -183,7 +183,7 @@ export interface CloudSkill {
 export interface NewSkillInput {
   name: string;
   description: string;
-  /** Optional retrieval override; null or omitted uses `description`. */
+  /** Optional Retrieval description; null or omitted uses `description`. */
   searchableDescription?: string | null;
   body: string;
   tags?: string[];
@@ -199,7 +199,7 @@ export interface UpdateSkillInput {
   expectedVersion?: number;
   name?: string;
   description?: string;
-  /** Set a retrieval override, or clear it with null. */
+  /** Set a Retrieval description, or clear it with null. */
   searchableDescription?: string | null;
   body?: string;
   tags?: string[];

@@ -1,6 +1,12 @@
 import type { RuntimeCatalogToolDefinition, RuntimeEvent } from "../types.js";
 import { isRemotelyPublishable } from "./allowlist.js";
 import {
+  type CloudDefinitionsAttachment,
+  type CloudDefinitionsOverlaySource,
+  type CloudDefinitionsRuntimeCatalog,
+  createCloudDefinitionsSource,
+} from "./cloud-definitions.js";
+import {
   classifyDelivery,
   type DeliveryResult,
   DeliveryStatus,
@@ -27,7 +33,7 @@ export interface RatelRuntimeEvents {
   ): RuntimeEventSubscription;
 }
 
-export interface RatelRuntimeCatalog {
+export interface RatelRuntimeCatalog extends CloudDefinitionsRuntimeCatalog {
   snapshot(): {
     readonly source_id: string;
     readonly tools: readonly RatelRuntimeCatalogToolDefinition[];
@@ -63,6 +69,8 @@ export interface AttachOptions
   readonly onStatusChange?: (status: RuntimeDeliveryStatus) => void;
   /** Emit one warning per failing kind until it recovers. Defaults to true. */
   readonly warnOnFailure?: boolean;
+  /** Give Cloud ownership of Retrieval descriptions. Defaults to false. */
+  readonly useCloudDefinitions?: boolean;
 }
 
 export interface RuntimeAttachment {
@@ -74,6 +82,11 @@ export interface RuntimeAttachment {
   flush(): Promise<void>;
   /** Stop accepting runtime work and deliver everything already accepted. */
   close(): Promise<void>;
+}
+
+export interface CloudDefinitionsRuntimeAttachment extends RuntimeAttachment {
+  /** Pull and apply changed Cloud-owned Retrieval descriptions. */
+  refreshCloudDefinitions(): Promise<boolean>;
 }
 
 const ATTACHMENTS = new WeakMap<object, RuntimeAttachment>();
@@ -97,21 +110,36 @@ const NOOP_ATTACHMENT: RuntimeAttachment = {
 };
 
 /** Subscribe one Ratel runtime to fail-open Cloud delivery. */
-export function attach(runtime: RatelRuntime, options: AttachOptions = {}): RuntimeAttachment {
+export function attach(
+  runtime: RatelRuntime,
+  options: AttachOptions & { readonly useCloudDefinitions: true },
+): CloudDefinitionsRuntimeAttachment;
+export function attach(runtime: RatelRuntime, options?: AttachOptions): RuntimeAttachment;
+export function attach(
+  runtime: RatelRuntime,
+  options: AttachOptions = {},
+): RuntimeAttachment | CloudDefinitionsRuntimeAttachment {
   try {
     if (!hasRuntimeEvents(runtime)) {
       warnMissingRuntimeEventsOnce();
-      return NOOP_ATTACHMENT;
+      return options.useCloudDefinitions
+        ? { ...NOOP_ATTACHMENT, refreshCloudDefinitions: async () => false }
+        : NOOP_ATTACHMENT;
     }
     return attachRuntime(runtime, options);
   } catch {
-    return NOOP_ATTACHMENT;
+    return options.useCloudDefinitions
+      ? { ...NOOP_ATTACHMENT, refreshCloudDefinitions: async () => false }
+      : NOOP_ATTACHMENT;
   }
 }
 
 function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAttachment {
   const existing = ATTACHMENTS.get(runtime);
-  if (existing) return existing;
+  if (existing) {
+    if (options.useCloudDefinitions) enableCloudDefinitions(runtime, existing, options);
+    return existing;
+  }
 
   const {
     apiKey = process.env.RATEL_API_KEY ?? "",
@@ -120,6 +148,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     snapshotReconcileIntervalMs,
     onStatusChange,
     warnOnFailure,
+    useCloudDefinitions = false,
     ...delivery
   } = options;
   // One normalization at the boundary keeps both lanes on a single source identity.
@@ -199,6 +228,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     if (batch.some((event) => event.type === "index_churn")) markSnapshotDirty();
   });
   markSnapshotDirty();
+  const cloudDefinitions = new CloudDefinitionsController(runtime.catalog);
 
   let closePromise: Promise<void> | undefined;
   const flushPublishers = async (): Promise<void> => {
@@ -215,6 +245,7 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
     } catch {
       // SDK delivery is observational and must not make host shutdown fail.
     }
+    if (cloudDefinitions.enabled) await cloudDefinitions.waitForInitialPull();
     await flushPublishers();
   };
   const handle: RuntimeAttachment = {
@@ -242,12 +273,101 @@ function attachRuntime(runtime: RatelRuntime, options: AttachOptions): RuntimeAt
         } catch {
           // Publisher lifecycle is fail-open too.
         }
+        cloudDefinitions.close();
       })();
       return closePromise;
     },
   };
   ATTACHMENTS.set(runtime, handle);
+  CLOUD_DEFINITION_CONTROLLERS.set(runtime, cloudDefinitions);
+  if (useCloudDefinitions) enableCloudDefinitions(runtime, handle, options);
   return handle;
+}
+
+const CLOUD_DEFINITION_CONTROLLERS = new WeakMap<object, CloudDefinitionsController>();
+
+class CloudDefinitionsController {
+  readonly #catalog: RatelRuntimeCatalog;
+  #source: CloudDefinitionsOverlaySource | undefined;
+  #attachment: CloudDefinitionsAttachment | undefined;
+  #attaching: Promise<CloudDefinitionsAttachment | undefined> | undefined;
+  #closed = false;
+
+  constructor(catalog: RatelRuntimeCatalog) {
+    this.#catalog = catalog;
+  }
+
+  get enabled(): boolean {
+    return this.#source !== undefined;
+  }
+
+  enable(source: CloudDefinitionsOverlaySource): void {
+    if (this.#closed) return;
+    this.#source ??= source;
+    void this.#ensureAttached();
+  }
+
+  async waitForInitialPull(): Promise<void> {
+    await this.#attaching;
+  }
+
+  async refresh(): Promise<boolean> {
+    if (this.#closed) return false;
+    const wasAttached = this.#attachment !== undefined;
+    const attachment = await this.#ensureAttached();
+    if (attachment === undefined) return false;
+    if (!wasAttached) return true;
+    try {
+      return await attachment.refresh();
+    } catch {
+      return false;
+    }
+  }
+
+  close(): void {
+    this.#closed = true;
+  }
+
+  async #ensureAttached(): Promise<CloudDefinitionsAttachment | undefined> {
+    if (this.#closed || this.#source === undefined) return undefined;
+    if (this.#attachment) return this.#attachment;
+    const attachCloudDefinitions = this.#catalog.attachCloudDefinitions;
+    if (attachCloudDefinitions === undefined) {
+      warnMissingCloudDefinitionsOnce();
+      return undefined;
+    }
+    this.#attaching ??= attachCloudDefinitions
+      .call(this.#catalog, { useCloudDefinitions: true, source: this.#source })
+      .then((attachment) => {
+        this.#attachment = attachment;
+        return attachment;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.#attaching = undefined;
+      });
+    return this.#attaching;
+  }
+}
+
+function enableCloudDefinitions(
+  runtime: RatelRuntime,
+  attachment: RuntimeAttachment,
+  options: AttachOptions,
+): void {
+  const controller = CLOUD_DEFINITION_CONTROLLERS.get(runtime);
+  if (controller === undefined) return;
+  controller.enable(
+    createCloudDefinitionsSource({
+      apiKey: options.apiKey ?? process.env.RATEL_API_KEY ?? "",
+      ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    }),
+  );
+  Object.assign(attachment, {
+    refreshCloudDefinitions: () => controller.refresh(),
+  });
 }
 
 /** A pre-runtime-events @ratel-ai/sdk (<0.10.0) exposes no `.events` on the runtime. */
@@ -261,6 +381,19 @@ function hasRuntimeEvents(runtime: RatelRuntime): boolean {
 }
 
 let warnedMissingRuntimeEvents = false;
+let warnedMissingCloudDefinitions = false;
+
+function warnMissingCloudDefinitionsOnce(): void {
+  if (warnedMissingCloudDefinitions) return;
+  warnedMissingCloudDefinitions = true;
+  try {
+    console.warn(
+      "[ratel-cloud-sdk/runtime] version_skew: this @ratel-ai/sdk runtime cannot attach Cloud definitions — upgrade @ratel-ai/sdk",
+    );
+  } catch {
+    // Console diagnostics remain fail-open.
+  }
+}
 
 function warnMissingRuntimeEventsOnce(): void {
   if (warnedMissingRuntimeEvents) return;

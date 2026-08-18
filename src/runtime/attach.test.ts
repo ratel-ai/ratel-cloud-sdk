@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { MockCloud } from "../testing/mock-cloud.js";
 import type { RuntimeEvent } from "../types.js";
 import { attach, type RatelRuntime, type RatelRuntimeEvents } from "./attach.js";
 
@@ -12,6 +13,74 @@ const EVENT: RuntimeEvent = {
 };
 
 describe("attach", () => {
+  it("opts into Cloud definitions and refreshes them with the last strong ETag", async () => {
+    const mock = new MockCloud();
+    mock.seedRuntimeCatalogOverride({
+      kind: "tool",
+      entryId: "deploy",
+      searchableDescription: "cloud rollback canary",
+    });
+    const ifNoneMatches: Array<string | null> = [];
+    const runtime = new CloudDefinitionsRuntime();
+    const handle = attach(runtime, {
+      apiKey: mock.apiKey,
+      baseUrl: "https://mock.test/api/v1",
+      fetch: ((input, init) => {
+        if (String(input).endsWith("/runtime-catalog/overrides")) {
+          ifNoneMatches.push(new Headers(init?.headers).get("if-none-match"));
+        }
+        return mock.fetch(input, init);
+      }) as typeof fetch,
+      useCloudDefinitions: true,
+    });
+
+    await handle.flush();
+    expect(runtime.cloudDefinitions).toEqual({
+      enabled: true,
+      overrides: [
+        {
+          kind: "tool",
+          entryId: "deploy",
+          searchableDescription: "cloud rollback canary",
+        },
+      ],
+    });
+
+    await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+    mock.seedRuntimeCatalogOverride({
+      kind: "fact",
+      entryId: "account-tier",
+      searchableDescription: "customer subscription plan",
+    });
+    await expect(handle.refreshCloudDefinitions()).resolves.toBe(true);
+
+    expect(runtime.cloudDefinitions.overrides).toHaveLength(2);
+    expect(ifNoneMatches).toEqual([
+      null,
+      expect.stringMatching(/^"[a-f0-9]{64}"$/),
+      expect.stringMatching(/^"[a-f0-9]{64}"$/),
+    ]);
+    await handle.close();
+  });
+
+  it("does not inspect or pull the Cloud definitions seam when the flag is omitted", async () => {
+    const runtime = new CloudDefinitionsRuntime();
+    const attachCloudDefinitions = vi.spyOn(runtime.catalog, "attachCloudDefinitions");
+    const requestedUrls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return Response.json({}, { status: 202 });
+    }) as typeof fetch;
+    const handle = attach(runtime, { apiKey: "rtl_test", fetch: fetchImpl as typeof fetch });
+
+    await handle.flush();
+
+    expect(attachCloudDefinitions).not.toHaveBeenCalled();
+    expect(requestedUrls.some((url) => url.includes("/overrides"))).toBe(false);
+    expect("refreshCloudDefinitions" in handle).toBe(false);
+    await handle.close();
+  });
+
   it.each([
     [302, "gated"],
     [401, "auth"],
@@ -699,6 +768,52 @@ class FakeRuntime {
   setTools(tools: Array<ReturnType<typeof tool>>): void {
     this.#tools = tools;
   }
+}
+
+class CloudDefinitionsRuntime extends FakeRuntime {
+  cloudDefinitions: {
+    enabled: boolean;
+    overrides: readonly {
+      kind: "tool" | "skill" | "fact";
+      entryId: string;
+      searchableDescription: string;
+    }[];
+  } = { enabled: false, overrides: [] };
+
+  override readonly catalog = {
+    snapshot: () => ({ source_id: "service-a", tools: [], skills: [] }),
+    attachCloudDefinitions: async (options: {
+      useCloudDefinitions: true;
+      source: {
+        fetch(ifNoneMatch?: string): Promise<
+          | { status: 304 }
+          | {
+              status: 200;
+              etag: string;
+              body: {
+                overrides: readonly {
+                  kind: "tool" | "skill" | "fact";
+                  entryId: string;
+                  searchableDescription: string;
+                }[];
+              };
+            }
+        >;
+      };
+    }) => {
+      this.cloudDefinitions.enabled = options.useCloudDefinitions;
+      let etag: string | undefined;
+      const refresh = async (): Promise<boolean> => {
+        const result = await options.source.fetch(etag);
+        if (result.status === 304) return false;
+        etag = result.etag;
+        this.cloudDefinitions.overrides = result.body.overrides;
+        return true;
+      };
+      await refresh();
+      return { refresh };
+    },
+  };
 }
 
 function tool(id: string) {
