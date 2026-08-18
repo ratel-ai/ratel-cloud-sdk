@@ -180,28 +180,37 @@ at your discretion. A request that never gets a response (DNS failure, abort, ti
 ### `cloud.runtimeCatalog` — pull runtime-catalog overrides
 
 Cloud never changes live registrations automatically. Pull the operator-authored overrides, then
-re-register your local definitions with the matching searchable descriptions:
+re-register your local definitions with the matching retrieval descriptions:
 
 ```ts
-const { overrides } = await cloud.runtimeCatalog.listOverrides();
-const toolOverrides = new Map(
-  overrides
-    .filter((override) => override.kind === "tool")
-    .map((override) => [override.entryId, override.searchableDescription]),
-);
+let previousEtag: string | undefined;
 
-for (const definition of toolDefinitions) {
-  const searchableDescription = toolOverrides.get(definition.id);
-  await runtime.tools.register({
-    ...definition,
-    ...(searchableDescription === undefined ? {} : { searchableDescription }),
-  });
+async function syncCloudDefinitions() {
+  const result = await cloud.runtimeCatalog.listOverrides({ ifNoneMatch: previousEtag });
+  if (result.notModified) return; // keep the cached overrides
+
+  previousEtag = result.etag ?? undefined;
+  const toolOverrides = new Map(
+    result.overrides
+      .filter((override) => override.kind === "tool")
+      .map((override) => [override.entryId, override.searchableDescription]),
+  );
+
+  for (const definition of toolDefinitions) {
+    const searchableDescription = toolOverrides.get(definition.id);
+    await runtime.tools.register({
+      ...definition,
+      ...(searchableDescription === undefined ? {} : { searchableDescription }),
+    });
+  }
 }
 ```
 
-`listOverrides()` calls the Bearer-authenticated runtime-catalog endpoint (public wire path:
-`GET /v1/runtime-catalog/overrides`) and returns `{ overrides: RuntimeCatalogOverride[] }`, sorted
-by `kind` then `entryId`. Each override has `kind: "tool" | "skill" | "fact"`, `entryId`, and
+`listOverrides({ ifNoneMatch })` calls the Bearer-authenticated runtime-catalog endpoint (public
+wire path: `GET /v1/runtime-catalog/overrides`). A fresh result has
+`{ notModified: false, etag, overrides }`; a matching ETag produces
+`{ notModified: true, etag }`, so callers keep their cached overrides. Fresh overrides are sorted
+by `kind` then `entryId`. Each has `kind: "tool" | "skill" | "fact"`, `entryId`, and
 `searchableDescription`. Only entries with an operator override are returned; an invalid project
 key throws `unauthorized`.
 
@@ -752,8 +761,9 @@ What to know when asserting against it:
 
 - Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
   real API.
-- Runtime-catalog overrides are served sorted by `kind` then `entryId`, matching the real pull
-  endpoint.
+- Runtime-catalog overrides are served sorted by `kind` then `entryId`, with the real endpoint's
+  strong payload ETag and matching `If-None-Match` → 304 behavior. Seeding or clearing changed
+  payloads moves the ETag.
 - The mock serves `GET /v1/catalog` and `GET /v2/catalog` (including `/api/…` aliases) with
   their frozen seven- and eight-field ETags. v1 omits `searchableDescription`; v2 emits it and
   canonicalizes unset overrides to `null`.

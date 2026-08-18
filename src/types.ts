@@ -129,6 +129,28 @@ export interface RuntimeCatalogOverridesResponse {
   overrides: RuntimeCatalogOverride[];
 }
 
+/** Conditional request options for the runtime-catalog overlay. */
+export interface ListRuntimeCatalogOverridesOptions {
+  ifNoneMatch?: string | undefined;
+}
+
+/** A fresh runtime-catalog overlay response and its cache validator. */
+export interface RuntimeCatalogOverridesFreshResult extends RuntimeCatalogOverridesResponse {
+  notModified: false;
+  etag: string | null;
+}
+
+/** An unchanged runtime-catalog overlay; keep the caller's cached overrides. */
+export interface RuntimeCatalogOverridesNotModifiedResult {
+  notModified: true;
+  etag: string | null;
+}
+
+/** Fresh and not-modified outcomes from the conditional overlay pull. */
+export type RuntimeCatalogOverridesResult =
+  | RuntimeCatalogOverridesFreshResult
+  | RuntimeCatalogOverridesNotModifiedResult;
+
 /* — managed skills (write surface) ——————————————————————————————————————— */
 
 export const SKILL_STATUSES = ["draft", "published", "archived"] as const;
