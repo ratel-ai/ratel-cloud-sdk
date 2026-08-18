@@ -19,7 +19,7 @@ const cloud = new RatelCloudSdk({ apiKey: process.env.RATEL_API_KEY! });
 const skill = await cloud.skills.create({
   name: "deploy-checklist",
   description: "How to deploy safely.",
-  searchableDescription: "release production rollback canary", // optional retrieval override
+  searchableDescription: "release production rollback canary", // optional Retrieval description
   body: "# Deploy\n…",
 });
 await cloud.skills.publish(skill.id, { expectedVersion: skill.version });
@@ -60,7 +60,23 @@ import { ratel } from "@ratel-ai/sdk";
 import * as ratelCloud from "@ratel-ai/cloud-sdk/runtime";
 
 const runtime = ratel();
-const cloudRuntime = ratelCloud.attach(runtime);
+const cloudRuntime = ratelCloud.attach(runtime, { useCloudDefinitions: true });
+```
+
+`useCloudDefinitions: true` is the one-line adoption path for Cloud-owned Retrieval descriptions.
+It pulls the complete runtime-catalog overlay during attach and applies it to live tools, skills,
+and facts through the core SDK. Definition events emitted after adoption carry
+`ratel.catalog.use_cloud_definitions=true`, so Cloud can distinguish an in-sync runtime from one
+that remains locally owned. Omit the flag (or set it to false) to keep local
+`searchableDescription` values authoritative and make no overlay request.
+
+The initial pull is fail-open and runs in the background because `attach()` remains synchronous.
+`flush()` and `close()` await it. For later pulls, call
+`cloudRuntime.refreshCloudDefinitions()`; it sends the last strong ETag, treats a `304` as a no-op,
+and applies a changed complete overlay:
+
+```ts
+await cloudRuntime.refreshCloudDefinitions();
 ```
 
 `attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
@@ -179,8 +195,10 @@ at your discretion. A request that never gets a response (DNS failure, abort, ti
 
 ### `cloud.runtimeCatalog` — pull runtime-catalog overrides
 
-Cloud never changes live registrations automatically. Pull the operator-authored overrides, then
-re-register your local definitions with the matching retrieval descriptions:
+Prefer the runtime attach flag above for the standard adoption path. The management client's
+`runtimeCatalog` surface remains available for custom ownership or scheduling flows: pull the
+operator-authored overrides, then re-register local definitions with the matching Retrieval
+descriptions:
 
 ```ts
 let previousEtag: string | undefined;
@@ -269,7 +287,7 @@ const next = await cloud.skills.update(skill.id, {
   expectedVersion: skill.version,      // guard the edit against concurrent writes
   body: "# Rotation (v2)\n…",
   name: "rotate-credentials",          // renames are allowed
-  searchableDescription: null,         // clear the retrieval override
+  searchableDescription: null,         // clear the Retrieval description
 });
 
 await cloud.skills.update(skill.id, { tags: ["ops"] }); // unguarded: applies unconditionally
