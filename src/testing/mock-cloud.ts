@@ -200,8 +200,7 @@ export class MockCloud {
 
     if (path === "/skills" && method === "GET") return this.listSkills(url);
     if (path === "/runtime-catalog/overrides" && method === "GET") {
-      const overrides = [...this.runtimeCatalogOverrides.values()].sort(compareRuntimeOverrides);
-      return Response.json({ overrides });
+      return this.getRuntimeCatalogOverrides(headers);
     }
     if (path === "/skills" && method === "POST")
       return this.createSkill(body as unknown as NewSkillInput);
@@ -227,6 +226,18 @@ export class MockCloud {
       return this.getJob(seg[1] as string);
 
     return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
+  private getRuntimeCatalogOverrides(headers: Headers): Response {
+    const body = {
+      overrides: [...this.runtimeCatalogOverrides.values()].sort(compareRuntimeOverrides),
+    };
+    const etag = `"${createHash("sha256").update(JSON.stringify(body), "utf8").digest("hex")}"`;
+    const responseHeaders = { etag, "cache-control": "no-cache" };
+    if (ifNoneMatchMatches(headers.get("if-none-match"), etag)) {
+      return new Response(null, { status: 304, headers: responseHeaders });
+    }
+    return Response.json(body, { headers: responseHeaders });
   }
 
   /* — catalog ————————————————————————————————————————————————————————————— */
