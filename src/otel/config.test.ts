@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { API_KEY_ENV, OTLP_ENDPOINT_ENV, resolveOtlpConfig } from "./config.js";
+import {
+  API_KEY_ENV,
+  OTLP_ENDPOINT_ENV,
+  OTLP_LOGS_ENDPOINT_ENV,
+  resolveOtlpConfig,
+  resolveOtlpLogsConfig,
+} from "./config.js";
 
 /** No ambient environment leaks into these cases unless a test opts in. */
 const NO_ENV: Record<string, string | undefined> = {};
@@ -86,5 +92,50 @@ describe("resolveOtlpConfig — resolved shape", () => {
       "headers",
       "url",
     ]);
+  });
+});
+
+describe("resolveOtlpLogsConfig — endpoint precedence", () => {
+  it("defaults to the Cloud logs route derived from the client's base URL", () => {
+    expect(resolveOtlpLogsConfig({}, NO_ENV).url).toBe("https://cloud.ratel.sh/api/v1/logs");
+  });
+
+  it("strips trailing slashes from an explicit baseUrl", () => {
+    expect(resolveOtlpLogsConfig({ baseUrl: "https://eu.ratel.sh/api/v1/" }, NO_ENV).url).toBe(
+      "https://eu.ratel.sh/api/v1/logs",
+    );
+  });
+
+  it("uses the logs-specific environment endpoint", () => {
+    const env = { [OTLP_LOGS_ENDPOINT_ENV]: "https://collector.internal/v1/logs" };
+    expect(resolveOtlpLogsConfig({}, env).url).toBe("https://collector.internal/v1/logs");
+  });
+
+  it("prefers an explicit endpoint over environment and baseUrl", () => {
+    const env = { [OTLP_LOGS_ENDPOINT_ENV]: "https://from-env/v1/logs" };
+    expect(
+      resolveOtlpLogsConfig(
+        { baseUrl: "https://eu.ratel.sh/api/v1", endpoint: "https://explicit/v1/logs" },
+        env,
+      ).url,
+    ).toBe("https://explicit/v1/logs");
+  });
+});
+
+describe("resolveOtlpLogsConfig — auth parity", () => {
+  it("preserves the trace resolver's header precedence", () => {
+    const env = { [API_KEY_ENV]: "rtl_from_env" };
+    expect(
+      resolveOtlpLogsConfig(
+        {
+          apiKey: "rtl_explicit",
+          headers: { Authorization: "Bearer stale", "x-tenant": "acme" },
+        },
+        env,
+      ).headers,
+    ).toEqual({ Authorization: "Bearer rtl_explicit", "x-tenant": "acme" });
+    expect(
+      resolveOtlpLogsConfig({ headers: { authorization: "Bearer deliberate" } }, env).headers,
+    ).toEqual({ authorization: "Bearer deliberate" });
   });
 });

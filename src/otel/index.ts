@@ -8,9 +8,12 @@
  *
  * ```ts
  * import { NodeSDK } from "@opentelemetry/sdk-node";
- * import { RatelSpanProcessor } from "@ratel-ai/cloud-sdk/otel";
+ * import { RatelLogRecordProcessor, RatelSpanProcessor } from "@ratel-ai/cloud-sdk/otel";
  *
- * const sdk = new NodeSDK({ spanProcessors: [new RatelSpanProcessor()] });
+ * const sdk = new NodeSDK({
+ *   spanProcessors: [new RatelSpanProcessor()],
+ *   logRecordProcessors: [new RatelLogRecordProcessor()],
+ * });
  * sdk.start();
  * ```
  *
@@ -21,11 +24,25 @@
 export {
   API_KEY_ENV,
   OTLP_ENDPOINT_ENV,
+  OTLP_LOGS_ENDPOINT_ENV,
+  type RatelOtlpLogsOptions,
   type RatelOtlpOptions,
   type ResolvedOtlpConfig,
   resolveOtlpConfig,
+  resolveOtlpLogsConfig,
 } from "./config.js";
-export { aiSdkSignalFilter, ratelSignalFilter, type SpanFilter } from "./filters.js";
+export {
+  aiSdkSignalFilter,
+  type LogFilter,
+  ratelEventFilter,
+  ratelSignalFilter,
+  type SpanFilter,
+} from "./filters.js";
+export {
+  RatelLogRecordProcessor,
+  type RatelLogRecordProcessorOptions,
+  ratelLogExporter,
+} from "./log-processor.js";
 export {
   EXPERIMENT_BAGGAGE_PREFIX,
   RatelSpanProcessor,

@@ -13,10 +13,14 @@
  * only then does each destination's filter decide. Nothing is dropped at the source.
  */
 
+import type { SdkLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 
 /** Predicate deciding whether a finished span is forwarded to Ratel Cloud. */
 export type SpanFilter = (span: ReadableSpan) => boolean;
+
+/** Predicate deciding whether an emitted log record is forwarded to Ratel Cloud. */
+export type LogFilter = (record: SdkLogRecord) => boolean;
 
 /** Every Vercel AI SDK span name starts here; the prefix anchors the match below. */
 const AI_SDK_SPAN_PREFIX = "ai.";
@@ -102,4 +106,9 @@ export function ratelSignalFilter(span: ReadableSpan): boolean {
     if (key.startsWith("gen_ai.") || key.startsWith("ratel.")) return true;
   }
   return aiSdkSignalFilter(span);
+}
+
+/** Default Logs filter: Cloud ingests only named events in the `ratel.*` namespace. */
+export function ratelEventFilter(record: SdkLogRecord): boolean {
+  return record.eventName?.startsWith("ratel.") ?? false;
 }

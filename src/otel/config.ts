@@ -15,6 +15,9 @@ import { DEFAULT_BASE_URL } from "../transport.js";
 /** Env var naming the OTLP traces endpoint. Redirects telemetry to any OTLP backend. */
 export const OTLP_ENDPOINT_ENV = "RATEL_OTLP_ENDPOINT";
 
+/** Env var naming the OTLP logs endpoint. Redirects logs to any OTLP backend. */
+export const OTLP_LOGS_ENDPOINT_ENV = "RATEL_OTLP_LOGS_ENDPOINT";
+
 /** Env var holding the project API key used when `apiKey` is omitted. */
 export const API_KEY_ENV = "RATEL_API_KEY";
 
@@ -35,6 +38,9 @@ export interface RatelOtlpOptions {
    */
   headers?: Record<string, string>;
 }
+
+/** Endpoint and authentication options for the Ratel Cloud OTLP Logs destination. */
+export interface RatelOtlpLogsOptions extends RatelOtlpOptions {}
 
 /** Resolved destination config — the pure core of the processor, exposed for testing. */
 export interface ResolvedOtlpConfig {
@@ -67,6 +73,22 @@ export function resolveOtlpConfig(
   }
 
   return { url, headers };
+}
+
+/**
+ * Resolve OTLP Logs exporter config.
+ *
+ * Endpoint precedence: explicit `endpoint` → `RATEL_OTLP_LOGS_ENDPOINT` →
+ * `${baseUrl}/logs`. Authentication and header precedence exactly match
+ * {@link resolveOtlpConfig}.
+ */
+export function resolveOtlpLogsConfig(
+  opts: RatelOtlpLogsOptions = {},
+  env: Record<string, string | undefined> = process.env,
+): ResolvedOtlpConfig {
+  const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const endpoint = opts.endpoint ?? env[OTLP_LOGS_ENDPOINT_ENV] ?? `${baseUrl}/logs`;
+  return resolveOtlpConfig({ ...opts, endpoint }, env);
 }
 
 /** Whether the caller already supplied an `Authorization` header (any casing). */

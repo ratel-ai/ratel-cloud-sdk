@@ -18,10 +18,10 @@
  * defaults for endpoint and auth, plus a signal filter so Ratel ingests only the
  * `gen_ai.*` / `ratel.*` stream rather than everything the host's provider sees.
  *
- * Traces are the whole surface. Content capture rides the same signal — Cloud reads
- * the `gen_ai.client.inference.operation.details` EventRecord as a span event on the
- * anchor span — so forwarding spans forwards captured content with them. There is no
- * separate Logs processor because Cloud consumes no Logs signal.
+ * Content capture rides the trace signal — Cloud reads the
+ * `gen_ai.client.inference.operation.details` EventRecord as a span event on the
+ * anchor span — so forwarding spans forwards captured content with them. Named
+ * `ratel.*` log records use the separate `RatelLogRecordProcessor` export.
  */
 
 import type { Context } from "@opentelemetry/api";

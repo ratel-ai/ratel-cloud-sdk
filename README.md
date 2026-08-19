@@ -541,32 +541,40 @@ surface as `name_conflict` — which is your signal to `list` and reconcile rath
 ## Telemetry — `@ratel-ai/cloud-sdk/otel`
 
 Ratel Cloud's usage signals — the ones behind `suggestions.generate` — are fed by OpenTelemetry.
-This package ships that destination as one composable span processor on a **subpath**, so the root
-import stays dependency-free for consumers who only manage a catalog:
+This package ships composable trace and Logs processors on a **subpath**, so the root import stays
+dependency-free for consumers who only manage a catalog:
 
 ```sh
-npm install @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-proto
+npm install @opentelemetry/api @opentelemetry/sdk-node \
+  @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-proto \
+  @opentelemetry/sdk-logs @opentelemetry/exporter-logs-otlp-proto
 ```
 
 They are declared as **optional peer dependencies**: a missing one fails at import, not halfway
-through a request.
+through a request. Because traces and Logs share the existing `/otel` export, trace-only consumers
+must also install the two Logs peers after upgrading: `@opentelemetry/sdk-logs` and
+`@opentelemetry/exporter-logs-otlp-proto`.
 
 ```ts
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { RatelSpanProcessor } from "@ratel-ai/cloud-sdk/otel";
+import { RatelLogRecordProcessor, RatelSpanProcessor } from "@ratel-ai/cloud-sdk/otel";
 
 const sdk = new NodeSDK({
   spanProcessors: [
     new RatelSpanProcessor(),    // → Ratel Cloud
     ...yourExistingProcessors,   // Langfuse, a generic OTLP exporter, … keep working untouched
   ],
+  logRecordProcessors: [
+    new RatelLogRecordProcessor(), // → Ratel Cloud
+    ...yourExistingLogProcessors,
+  ],
 });
 sdk.start();
 ```
 
 **You own the provider.** Ratel ships no bootstrap, registers nothing globally, and installs no
-`ContextManager`; `service.name` and flush/shutdown belong to your host. The processor is thin
-sugar over a standard `BatchSpanProcessor` + OTLP exporter — Cloud defaults plus a filter.
+`ContextManager`; `service.name` and flush/shutdown belong to your host. The processors are thin
+sugar over the standard batch processors and OTLP exporters — Cloud defaults plus filters.
 
 ### What gets sent
 
@@ -602,6 +610,14 @@ Note the filter keys on span *name* and *attribute keys*, never on the emitting 
 Ratel SDK and `@ai-sdk/otel` emit an `execute_tool <id>` span, and `gen_ai.*` attributes appear on
 both. Ratel Cloud wants the GenAI signal whoever produced it.
 
+The Logs processor forwards only records whose `eventName` begins with `ratel.`. Unnamed logs and
+other namespaces stay with the host's other processors. Override this independently with
+`logFilter`:
+
+```ts
+new RatelLogRecordProcessor({ logFilter: (record) => record.eventName === "custom.event" });
+```
+
 > **Watch your attribute namespaces.** *Any* `ratel.*` attribute key opts a span in — including
 > one you added for your own bookkeeping. Tag incidental attributes outside `ratel.*` (and outside
 > `gen_ai.*`) unless you actually mean to send that span to Cloud.
@@ -609,8 +625,8 @@ both. Ratel Cloud wants the GenAI signal whoever produced it.
 **Captured content rides along.** When content capture is enabled, the
 `gen_ai.client.inference.operation.details` EventRecord is a span event on the inference span, and
 Cloud reads it from there. Forwarding the span forwards the captured messages with it — there is
-nothing extra to wire up, and no separate Logs processor, because Cloud consumes no OTLP Logs
-signal.
+nothing extra to wire up for captured messages. The Logs processor separately delivers named
+`ratel.*` event records.
 
 ### Endpoint and auth
 
@@ -620,11 +636,12 @@ halves of the SDK at one deployment:
 | Setting | Resolution order |
 |---|---|
 | Traces URL | `endpoint` → `RATEL_OTLP_ENDPOINT` → `${baseUrl}/traces` (default `https://cloud.ratel.sh/api/v1/traces`) |
+| Logs URL | `endpoint` → `RATEL_OTLP_LOGS_ENDPOINT` → `${baseUrl}/logs` (default `https://cloud.ratel.sh/api/v1/logs`) |
 | Auth | `apiKey` → an `Authorization` header you passed → `RATEL_API_KEY` |
 
 Code-level config always beats ambient environment, and the `RATEL_API_KEY` fallback never
-clobbers an `Authorization` header you set on purpose. Point `RATEL_OTLP_ENDPOINT` at any OTLP
-backend to use this processor without Ratel Cloud at all.
+clobbers an `Authorization` header you set on purpose. Point `RATEL_OTLP_ENDPOINT` and
+`RATEL_OTLP_LOGS_ENDPOINT` at any OTLP backend to use these processors without Ratel Cloud.
 
 Export is OTLP `http/protobuf`. Cloud accepts both protobuf and JSON, and replies `202 Accepted`.
 
@@ -635,6 +652,7 @@ exporter, no baggage copying. Leave the wiring in place and flip the flag.
 
 ```ts
 new RatelSpanProcessor({ enabled: process.env.NODE_ENV === "production" });
+new RatelLogRecordProcessor({ enabled: process.env.NODE_ENV === "production" });
 ```
 
 ### Experiment arm stamping
