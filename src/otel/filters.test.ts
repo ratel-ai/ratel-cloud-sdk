@@ -1,6 +1,7 @@
+import type { SdkLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it } from "vitest";
-import { aiSdkSignalFilter, ratelSignalFilter } from "./filters.js";
+import { aiSdkSignalFilter, ratelEventFilter, ratelSignalFilter } from "./filters.js";
 
 /** Only the two fields the predicate reads; the rest of ReadableSpan is irrelevant here. */
 function span(name: string, attributes: Record<string, unknown> = {}): ReadableSpan {
@@ -120,5 +121,17 @@ describe("aiSdkSignalFilter", () => {
     expect(aiSdkSignalFilter(span("ratel.search"))).toBe(false);
     expect(aiSdkSignalFilter(span("GET /health", { "http.method": "GET" }))).toBe(false);
     expect(aiSdkSignalFilter(span("execute_tool lookup", { "gen_ai.tool.name": "l" }))).toBe(false);
+  });
+});
+
+describe("ratelEventFilter", () => {
+  it("keeps only named ratel.* events", () => {
+    const record = (eventName?: string) => ({ eventName }) as SdkLogRecord;
+
+    expect(ratelEventFilter(record("ratel.search.result"))).toBe(true);
+    expect(ratelEventFilter(record("ratel.skill.loaded"))).toBe(true);
+    expect(ratelEventFilter(record("ratelize"))).toBe(false);
+    expect(ratelEventFilter(record("gen_ai.client.inference.operation.details"))).toBe(false);
+    expect(ratelEventFilter(record())).toBe(false);
   });
 });
