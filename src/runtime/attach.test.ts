@@ -121,7 +121,10 @@ describe("attach", () => {
 
   it("does not inspect or pull the Cloud definitions seam when the flag is omitted", async () => {
     const runtime = new CloudDefinitionsRuntime();
-    const attachDefinitionOverrides = vi.spyOn(runtime.catalog, "attachDefinitionOverrides");
+    const attachDefinitionOverrides = vi.spyOn(
+      runtime.catalog,
+      "experimentalAttachDefinitionOverrides",
+    );
     const requestedUrls: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL) => {
       requestedUrls.push(String(input));
@@ -838,8 +841,7 @@ class CloudDefinitionsRuntime extends FakeRuntime {
 
   override readonly catalog = {
     snapshot: () => ({ source_id: "service-a", tools: [], skills: [] }),
-    attachDefinitionOverrides: async (options: {
-      useDefinitionOverrides: true;
+    experimentalAttachDefinitionOverrides: async (options: {
       source: {
         fetch(ifNoneMatch?: string): Promise<
           | { status: 304 }
@@ -857,7 +859,7 @@ class CloudDefinitionsRuntime extends FakeRuntime {
         >;
       };
     }) => {
-      this.cloudDefinitions.enabled = options.useDefinitionOverrides;
+      this.cloudDefinitions.enabled = true;
       let etag: string | undefined;
       const refresh = async (): Promise<boolean> => {
         const result = await options.source.fetch(etag);

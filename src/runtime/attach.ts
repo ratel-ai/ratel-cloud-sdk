@@ -337,13 +337,13 @@ class CloudDefinitionsController {
   async #ensureAttached(): Promise<CloudDefinitionsAttachment | undefined> {
     if (this.#closed || this.#source === undefined) return undefined;
     if (this.#attachment) return this.#attachment;
-    const attachDefinitionOverrides = this.#catalog.attachDefinitionOverrides;
+    const attachDefinitionOverrides = this.#catalog.experimentalAttachDefinitionOverrides;
     if (attachDefinitionOverrides === undefined) {
       warnMissingCloudDefinitionsOnce();
       return undefined;
     }
     this.#attaching ??= attachDefinitionOverrides
-      .call(this.#catalog, { useDefinitionOverrides: true, source: this.#source })
+      .call(this.#catalog, { source: this.#source })
       .then((attachment) => {
         this.#attachment = attachment;
         this.#warningActive = false;
