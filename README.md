@@ -66,7 +66,7 @@ const cloudRuntime = ratelCloud.attach(runtime, { useCloudDefinitions: true });
 `useCloudDefinitions: true` is the one-line adoption path for Cloud-owned Retrieval descriptions.
 It pulls the complete runtime-catalog overlay during attach and applies it to live tools, skills,
 and facts through the core SDK. Definition events emitted after adoption carry
-`ratel.catalog.use_cloud_definitions=true`, so Cloud can distinguish an in-sync runtime from one
+`ratel.catalog.use_definition_overrides=true`, so Cloud can distinguish an in-sync runtime from one
 that remains locally owned. Omit the flag (or set it to false) to keep local
 `searchableDescription` values authoritative and make no overlay request.
 

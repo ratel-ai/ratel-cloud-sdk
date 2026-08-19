@@ -11,8 +11,8 @@ export interface CloudDefinitionsAttachment {
 }
 
 export interface CloudDefinitionsRuntimeCatalog {
-  attachCloudDefinitions?(options: {
-    readonly useCloudDefinitions: true;
+  attachDefinitionOverrides?(options: {
+    readonly useDefinitionOverrides: true;
     readonly source: CloudDefinitionsOverlaySource;
   }): Promise<CloudDefinitionsAttachment>;
 }
