@@ -364,8 +364,12 @@ class CloudDefinitionsController {
     this.#warningActive = true;
     try {
       const message = error instanceof Error ? error.message : String(error);
+      const activeDescriptions =
+        this.#attachment === undefined
+          ? "local Retrieval descriptions"
+          : "last successfully applied Cloud Retrieval descriptions";
       console.warn(
-        `[ratel-cloud-sdk/runtime] cloud_definitions: ${message} — local Retrieval descriptions remain active`,
+        `[ratel-cloud-sdk/runtime] cloud_definitions: ${message} — ${activeDescriptions} remain active`,
       );
     } catch {
       // Console diagnostics remain fail-open.

@@ -95,6 +95,52 @@ describe("attach", () => {
     }
   });
 
+  it("reports that the last Cloud definitions remain active when a refresh fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mock = new MockCloud();
+    mock.seedRuntimeCatalogOverride({
+      kind: "tool",
+      entryId: "deploy",
+      searchableDescription: "cloud rollback canary",
+    });
+    const runtime = new CloudDefinitionsRuntime();
+    let failRefresh = false;
+    const handle = attach(runtime, {
+      apiKey: mock.apiKey,
+      baseUrl: "https://mock.test/api/v1",
+      fetch: ((input, init) => {
+        if (failRefresh && String(input).endsWith("/runtime-catalog/overrides")) {
+          return Promise.resolve(Response.json({ error: "unauthorized" }, { status: 401 }));
+        }
+        return mock.fetch(input, init);
+      }) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      useCloudDefinitions: true,
+    });
+
+    try {
+      await handle.flush();
+      warn.mockClear();
+      failRefresh = true;
+      await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+
+      expect(runtime.cloudDefinitions.overrides).toEqual([
+        {
+          kind: "tool",
+          entryId: "deploy",
+          searchableDescription: "cloud rollback canary",
+        },
+      ]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] cloud_definitions: Ratel Cloud request failed: 401 unauthorized — last successfully applied Cloud Retrieval descriptions remain active",
+      );
+    } finally {
+      await handle.close();
+      warn.mockRestore();
+    }
+  });
+
   it("names the minimum SDK version when Cloud definitions are unavailable", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const handle = attach(new FakeRuntime(), {

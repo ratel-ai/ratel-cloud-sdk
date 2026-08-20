@@ -83,6 +83,10 @@ and applies a changed complete overlay:
 await cloudRuntime.refreshCloudDefinitions();
 ```
 
+Failures warn once per continuous failure period. An initial-pull failure leaves local Retrieval
+descriptions active; a later refresh failure retains the last successfully applied Cloud
+descriptions.
+
 `attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
 remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
 process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
