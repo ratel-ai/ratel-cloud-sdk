@@ -68,7 +68,7 @@ It pulls the complete runtime-catalog overlay during attach and applies it to li
 and facts through the core SDK. Definition events emitted after adoption carry
 `ratel.catalog.use_definition_overrides=true`, so Cloud can distinguish an in-sync runtime from one
 that remains locally owned. Omit the flag (or set it to false) to keep local
-`searchableDescription` values authoritative and make no overlay request.
+`experimentalSearchableDescription` values authoritative and make no overlay request.
 
 Cloud definitions require `@ratel-ai/sdk` >= 0.12.0. Versions 0.10.x and 0.11.x remain supported
 for runtime events and catalog snapshots, but using this flag warns once and keeps local Retrieval
@@ -222,7 +222,7 @@ async function syncCloudDefinitions() {
     const searchableDescription = toolOverrides.get(definition.id);
     await runtime.tools.register({
       ...definition,
-      ...(searchableDescription === undefined ? {} : { searchableDescription }),
+      ...(searchableDescription === undefined ? {} : { experimentalSearchableDescription: searchableDescription }),
     });
   }
 }
