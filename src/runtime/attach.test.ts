@@ -1,4 +1,6 @@
+import { ratel } from "@ratel-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
+import { MockCloud } from "../testing/mock-cloud.js";
 import type { RuntimeEvent } from "../types.js";
 import { attach, type RatelRuntime, type RatelRuntimeEvents } from "./attach.js";
 
@@ -12,6 +14,208 @@ const EVENT: RuntimeEvent = {
 };
 
 describe("attach", () => {
+  it("applies Cloud definitions through the released SDK overlay seam", async () => {
+    const mock = new MockCloud();
+    mock.seedRuntimeCatalogOverride({
+      kind: "tool",
+      entryId: "deploy",
+      searchableDescription: "quasar zephyr rollback",
+    });
+    const runtime = ratel({ events: { sourceId: "service-a" } });
+    await runtime.tools.register({
+      id: "deploy",
+      name: "deploy",
+      description: "Prepare a production release.",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "string" },
+      execute: () => "deployed",
+    });
+    const handle = attach(runtime, {
+      apiKey: mock.apiKey,
+      baseUrl: "https://mock.test/api/v1",
+      fetch: mock.fetch,
+      useCloudDefinitions: true,
+    });
+
+    await handle.flush();
+
+    expect(runtime.tools.catalog.search("quasar zephyr rollback", 1)[0]?.toolId).toBe("deploy");
+    await handle.close();
+  });
+
+  it("opts into Cloud definitions and refreshes them with the last strong ETag", async () => {
+    const mock = new MockCloud();
+    mock.seedRuntimeCatalogOverride({
+      kind: "tool",
+      entryId: "deploy",
+      searchableDescription: "cloud rollback canary",
+    });
+    const ifNoneMatches: Array<string | null> = [];
+    const runtime = new CloudDefinitionsRuntime();
+    const handle = attach(runtime, {
+      apiKey: mock.apiKey,
+      baseUrl: "https://mock.test/api/v1",
+      fetch: ((input, init) => {
+        if (String(input).endsWith("/runtime-catalog/overrides")) {
+          ifNoneMatches.push(new Headers(init?.headers).get("if-none-match"));
+        }
+        return mock.fetch(input, init);
+      }) as typeof fetch,
+      useCloudDefinitions: true,
+    });
+
+    await handle.flush();
+    expect(runtime.cloudDefinitions).toEqual({
+      enabled: true,
+      overrides: [
+        {
+          kind: "tool",
+          entryId: "deploy",
+          searchableDescription: "cloud rollback canary",
+        },
+      ],
+    });
+
+    await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+    mock.seedRuntimeCatalogOverride({
+      kind: "fact",
+      entryId: "account-tier",
+      searchableDescription: "customer subscription plan",
+    });
+    await expect(handle.refreshCloudDefinitions()).resolves.toBe(true);
+
+    expect(runtime.cloudDefinitions.overrides).toHaveLength(2);
+    expect(ifNoneMatches).toEqual([
+      null,
+      expect.stringMatching(/^"[a-f0-9]{64}"$/),
+      expect.stringMatching(/^"[a-f0-9]{64}"$/),
+    ]);
+    await handle.close();
+  });
+
+  it("warns once while Cloud definition pulls keep failing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const runtime = new CloudDefinitionsRuntime();
+    let overrideRequests = 0;
+    const handle = attach(runtime, {
+      apiKey: "invalid",
+      fetch: (async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/runtime-catalog/overrides")) {
+          overrideRequests += 1;
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+        return Response.json({ synced: true }, { status: 202 });
+      }) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      useCloudDefinitions: true,
+    });
+
+    try {
+      await handle.flush();
+      await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+
+      expect(overrideRequests).toBe(2);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] cloud_definitions: Ratel Cloud request failed: 401 unauthorized — local Retrieval descriptions remain active",
+      );
+    } finally {
+      await handle.close();
+      warn.mockRestore();
+    }
+  });
+
+  it("reports that the last Cloud definitions remain active when a refresh fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mock = new MockCloud();
+    mock.seedRuntimeCatalogOverride({
+      kind: "tool",
+      entryId: "deploy",
+      searchableDescription: "cloud rollback canary",
+    });
+    const runtime = new CloudDefinitionsRuntime();
+    let failRefresh = false;
+    const handle = attach(runtime, {
+      apiKey: mock.apiKey,
+      baseUrl: "https://mock.test/api/v1",
+      fetch: ((input, init) => {
+        if (failRefresh && String(input).endsWith("/runtime-catalog/overrides")) {
+          return Promise.resolve(Response.json({ error: "unauthorized" }, { status: 401 }));
+        }
+        return mock.fetch(input, init);
+      }) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      useCloudDefinitions: true,
+    });
+
+    try {
+      await handle.flush();
+      warn.mockClear();
+      failRefresh = true;
+      await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+
+      expect(runtime.cloudDefinitions.overrides).toEqual([
+        {
+          kind: "tool",
+          entryId: "deploy",
+          searchableDescription: "cloud rollback canary",
+        },
+      ]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] cloud_definitions: Ratel Cloud request failed: 401 unauthorized — last successfully applied Cloud Retrieval descriptions remain active",
+      );
+    } finally {
+      await handle.close();
+      warn.mockRestore();
+    }
+  });
+
+  it("names the minimum SDK version when Cloud definitions are unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handle = attach(new FakeRuntime(), {
+      apiKey: "rtl_test",
+      fetch: (async () => Response.json({ synced: true }, { status: 202 })) as typeof fetch,
+      retry: { maxAttempts: 1 },
+      useCloudDefinitions: true,
+      warnOnFailure: false,
+    });
+
+    try {
+      await handle.flush();
+
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "[ratel-cloud-sdk/runtime] version_skew: Cloud definitions require @ratel-ai/sdk >=0.12.0 — local Retrieval descriptions remain active",
+      );
+      await expect(handle.refreshCloudDefinitions()).resolves.toBe(false);
+    } finally {
+      await handle.close();
+      warn.mockRestore();
+    }
+  });
+
+  it("does not inspect or pull the Cloud definitions seam when the flag is omitted", async () => {
+    const runtime = new CloudDefinitionsRuntime();
+    const attachDefinitionOverrides = vi.spyOn(
+      runtime.catalog,
+      "experimentalAttachDefinitionOverrides",
+    );
+    const requestedUrls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return Response.json({}, { status: 202 });
+    }) as typeof fetch;
+    const handle = attach(runtime, { apiKey: "rtl_test", fetch: fetchImpl as typeof fetch });
+
+    await handle.flush();
+
+    expect(attachDefinitionOverrides).not.toHaveBeenCalled();
+    expect(requestedUrls.some((url) => url.includes("/overrides"))).toBe(false);
+    expect("refreshCloudDefinitions" in handle).toBe(false);
+    await handle.close();
+  });
+
   it.each([
     [302, "gated"],
     [401, "auth"],
@@ -699,6 +903,51 @@ class FakeRuntime {
   setTools(tools: Array<ReturnType<typeof tool>>): void {
     this.#tools = tools;
   }
+}
+
+class CloudDefinitionsRuntime extends FakeRuntime {
+  cloudDefinitions: {
+    enabled: boolean;
+    overrides: readonly {
+      kind: "tool" | "skill" | "fact";
+      entryId: string;
+      searchableDescription: string;
+    }[];
+  } = { enabled: false, overrides: [] };
+
+  override readonly catalog = {
+    snapshot: () => ({ source_id: "service-a", tools: [], skills: [] }),
+    experimentalAttachDefinitionOverrides: async (options: {
+      source: {
+        fetch(ifNoneMatch?: string): Promise<
+          | { status: 304 }
+          | {
+              status: 200;
+              etag: string;
+              body: {
+                overrides: readonly {
+                  kind: "tool" | "skill" | "fact";
+                  entryId: string;
+                  searchableDescription: string;
+                }[];
+              };
+            }
+        >;
+      };
+    }) => {
+      this.cloudDefinitions.enabled = true;
+      let etag: string | undefined;
+      const refresh = async (): Promise<boolean> => {
+        const result = await options.source.fetch(etag);
+        if (result.status === 304) return false;
+        etag = result.etag;
+        this.cloudDefinitions.overrides = result.body.overrides;
+        return true;
+      };
+      await refresh();
+      return { refresh };
+    },
+  };
 }
 
 function tool(id: string) {

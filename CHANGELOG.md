@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0-rc.1 - 2026-08-21
+
+### Added
+
+- **Cloud-owned Retrieval descriptions.** Managed skills now round-trip an optional
+  `searchableDescription`; catalog protocol v2 exposes it with frozen canonicalization and ETag
+  helpers. `cloud.runtimeCatalog.listOverrides()` pulls operator-authored runtime definition
+  overrides with conditional ETag support, while `attach(runtime, { useCloudDefinitions: true })`
+  applies and refreshes them through `@ratel-ai/sdk` >= 0.12.0 without making attach failures fatal.
+- **OTLP Logs delivery.** `RatelLogRecordProcessor` forwards named `ratel.*` event records to
+  Cloud's Logs endpoint, with independent filtering, endpoint configuration, and fail-closed
+  disablement. It composes with host-owned OpenTelemetry providers like `RatelSpanProcessor`.
+- **Catalog v2 test parity.** `MockCloud` serves v1 and v2 catalogs, conditional ETags, and seeded
+  runtime-catalog overrides for integration tests.
+
+### Changed
+
+- Importing `@ratel-ai/cloud-sdk/otel` now also requires the optional
+  `@opentelemetry/sdk-logs` and `@opentelemetry/exporter-logs-otlp-proto` peers, including for
+  trace-only consumers.
+
 ## 0.4.0 - 2026-08-15
 
 ### Added

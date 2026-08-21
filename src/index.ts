@@ -1,5 +1,6 @@
 import { IntentsClient } from "./intents.js";
 import { JobsClient } from "./jobs.js";
+import { RuntimeCatalogClient } from "./runtime-catalog.js";
 import { SkillsClient } from "./skills.js";
 import { SuggestionsClient } from "./suggestions.js";
 import { type CloudSdkOptions, Transport } from "./transport.js";
@@ -18,6 +19,7 @@ export class RatelCloudSdk {
   readonly suggestions: SuggestionsClient;
   readonly intents: IntentsClient;
   readonly jobs: JobsClient;
+  readonly runtimeCatalog: RuntimeCatalogClient;
 
   constructor(options: CloudSdkOptions) {
     const transport = new Transport(options);
@@ -25,12 +27,14 @@ export class RatelCloudSdk {
     this.suggestions = new SuggestionsClient(transport);
     this.intents = new IntentsClient(transport);
     this.jobs = new JobsClient(transport);
+    this.runtimeCatalog = new RuntimeCatalogClient(transport);
   }
 }
 
 export { CloudSdkError, type CloudSdkErrorCode } from "./errors.js";
 export { IntentsClient, type ListIntentsOptions } from "./intents.js";
 export { JobsClient, type WaitForJobOptions } from "./jobs.js";
+export { RuntimeCatalogClient } from "./runtime-catalog.js";
 export { type ListSkillsOptions, type ListSkillsResult, SkillsClient } from "./skills.js";
 export { type ListSuggestionsOptions, SuggestionsClient } from "./suggestions.js";
 export {
@@ -42,4 +46,12 @@ export {
   Transport,
 } from "./transport.js";
 export * from "./types.js";
-export { canonicalSet, canonicalSkill, ifNoneMatchMatches, resolve } from "./wire.js";
+export {
+  canonicalSet,
+  canonicalSetV2,
+  canonicalSkill,
+  canonicalSkillV2,
+  ifNoneMatchMatches,
+  resolve,
+  resolveV2,
+} from "./wire.js";

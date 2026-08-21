@@ -13,6 +13,7 @@ export {
 export {
   type AttachOptions,
   attach,
+  type CloudDefinitionsRuntimeAttachment,
   type RatelRuntime,
   type RatelRuntimeCatalog,
   type RatelRuntimeCatalogToolDefinition,

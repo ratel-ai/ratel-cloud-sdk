@@ -12,6 +12,32 @@ function makeSdk(mock = new MockCloud()): { sdk: RatelCloudSdk; mock: MockCloud 
 }
 
 describe("SkillsClient", () => {
+  it("round-trips a searchable description through create, get, update, and clear", async () => {
+    const { sdk } = makeSdk();
+    const created = await sdk.skills.create({
+      name: "deploy-checklist",
+      description: "How to deploy safely.",
+      searchableDescription: "release production rollback canary",
+      body: "# Deploy\n…",
+    });
+    expect(created.searchableDescription).toBe("release production rollback canary");
+
+    const fetched = await sdk.skills.get(created.id);
+    expect(fetched.searchableDescription).toBe("release production rollback canary");
+
+    const updated = await sdk.skills.update(created.id, {
+      expectedVersion: fetched.version,
+      searchableDescription: "deploy production safely",
+    });
+    expect(updated.searchableDescription).toBe("deploy production safely");
+
+    const cleared = await sdk.skills.update(created.id, {
+      expectedVersion: updated.version,
+      searchableDescription: null,
+    });
+    expect(cleared.searchableDescription).toBeNull();
+  });
+
   it("creates a draft and reads it back via get and list", async () => {
     const { sdk } = makeSdk();
     const created = await sdk.skills.create({
@@ -129,6 +155,29 @@ describe("SkillsClient", () => {
       { name: "fresh", description: "d", body: "b" },
     ]);
     expect(report).toEqual({ created: ["fresh"], updated: ["change"], unchanged: ["keep"] });
+  });
+
+  it("import reports an override-only edit as updated", async () => {
+    const { sdk } = makeSdk();
+    const existing = await sdk.skills.create({
+      name: "deploy-checklist",
+      description: "How to deploy safely.",
+      body: "# Deploy",
+    });
+
+    const report = await sdk.skills.import([
+      {
+        name: existing.name,
+        description: existing.description,
+        searchableDescription: "release production rollback canary",
+        body: existing.body,
+      },
+    ]);
+
+    expect(report).toEqual({ created: [], updated: [existing.name], unchanged: [] });
+    const updated = await sdk.skills.get(existing.id);
+    expect(updated.searchableDescription).toBe("release production rollback canary");
+    expect(updated.version).toBe(existing.version + 1);
   });
 
   it("get of an unknown id maps to not_found", async () => {
