@@ -1,4 +1,8 @@
-import type { RuntimeCatalogToolDefinition, RuntimeEvent } from "../types.js";
+import type {
+  RuntimeEvents,
+  RuntimeEventSubscription as SdkRuntimeEventSubscription,
+} from "@ratel-ai/sdk";
+import type { RuntimeCatalogToolDefinition } from "../types.js";
 import { isRemotelyPublishable } from "./allowlist.js";
 import {
   type CloudDefinitionsAttachment,
@@ -20,18 +24,9 @@ const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 500;
 /** Sustained churn re-arms the debounce forever; the max wait forces publication. */
 const SNAPSHOT_MAX_WAIT_MULTIPLIER = 4;
 
-export interface RuntimeEventSubscription {
-  readonly droppedCount: number;
-  unsubscribe(): void;
-  flush(): Promise<void>;
-}
+export type RuntimeEventSubscription = SdkRuntimeEventSubscription;
 
-export interface RatelRuntimeEvents {
-  readonly sourceId: string;
-  subscribe(
-    handler: (batch: readonly RuntimeEvent[]) => void | PromiseLike<void>,
-  ): RuntimeEventSubscription;
-}
+export type RatelRuntimeEvents = Pick<RuntimeEvents, "sourceId" | "subscribe">;
 
 export interface RatelRuntimeCatalog extends CloudDefinitionsRuntimeCatalog {
   snapshot(): {

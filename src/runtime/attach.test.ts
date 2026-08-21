@@ -1,3 +1,4 @@
+import { ratel } from "@ratel-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { MockCloud } from "../testing/mock-cloud.js";
 import type { RuntimeEvent } from "../types.js";
@@ -13,6 +14,35 @@ const EVENT: RuntimeEvent = {
 };
 
 describe("attach", () => {
+  it("applies Cloud definitions through the released SDK overlay seam", async () => {
+    const mock = new MockCloud();
+    mock.seedRuntimeCatalogOverride({
+      kind: "tool",
+      entryId: "deploy",
+      searchableDescription: "quasar zephyr rollback",
+    });
+    const runtime = ratel({ events: { sourceId: "service-a" } });
+    await runtime.tools.register({
+      id: "deploy",
+      name: "deploy",
+      description: "Prepare a production release.",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "string" },
+      execute: () => "deployed",
+    });
+    const handle = attach(runtime, {
+      apiKey: mock.apiKey,
+      baseUrl: "https://mock.test/api/v1",
+      fetch: mock.fetch,
+      useCloudDefinitions: true,
+    });
+
+    await handle.flush();
+
+    expect(runtime.tools.catalog.search("quasar zephyr rollback", 1)[0]?.toolId).toBe("deploy");
+    await handle.close();
+  });
+
   it("opts into Cloud definitions and refreshes them with the last strong ETag", async () => {
     const mock = new MockCloud();
     mock.seedRuntimeCatalogOverride({

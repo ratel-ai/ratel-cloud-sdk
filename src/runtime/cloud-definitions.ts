@@ -1,28 +1,16 @@
+import type {
+  ExperimentalDefinitionOverlaySource,
+  ExperimentalDefinitionOverridesAttachment,
+  ExperimentalDefinitionOverridesRuntimeCatalog,
+} from "@ratel-ai/sdk";
 import { RuntimeCatalogClient } from "../runtime-catalog.js";
 import { type CloudSdkOptions, Transport } from "../transport.js";
-import type { RuntimeCatalogOverride } from "../types.js";
 
-export interface CloudDefinitionsOverlaySource {
-  fetch(ifNoneMatch?: string): Promise<CloudDefinitionsOverlayResponse>;
-}
-
-export interface CloudDefinitionsAttachment {
-  refresh(): Promise<boolean>;
-}
-
-export interface CloudDefinitionsRuntimeCatalog {
-  experimentalAttachDefinitionOverrides?(options: {
-    readonly source: CloudDefinitionsOverlaySource;
-  }): Promise<CloudDefinitionsAttachment>;
-}
-
-type CloudDefinitionsOverlayResponse =
-  | { readonly status: 304 }
-  | {
-      readonly status: 200;
-      readonly etag: string;
-      readonly body: { readonly overrides: readonly RuntimeCatalogOverride[] };
-    };
+export type CloudDefinitionsOverlaySource = ExperimentalDefinitionOverlaySource;
+export type CloudDefinitionsAttachment = ExperimentalDefinitionOverridesAttachment;
+export type CloudDefinitionsRuntimeCatalog = Partial<
+  Pick<ExperimentalDefinitionOverridesRuntimeCatalog, "experimentalAttachDefinitionOverrides">
+>;
 
 /** Bridge the Cloud override client into the core SDK's injected overlay seam. */
 export function createCloudDefinitionsSource(
