@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   AnalyzeResult,
   Catalog,
+  CatalogV2,
   CloudSkill,
   CloudSuggestion,
   ConversationMessage,
@@ -9,17 +10,19 @@ import type {
   ImportReport,
   NewSkillInput,
   NewSkillPatch,
+  RuntimeCatalogOverride,
   SkillStatus,
   SuggestionStatus,
   SuggestionType,
   UpdateSkillInput,
   WireSkill,
+  WireSkillV2,
 } from "../types.js";
 import { SKILL_STATUSES, SUGGESTION_STATUSES, SUGGESTION_TYPES } from "../types.js";
-import { canonicalSet, ifNoneMatchMatches, resolve } from "../wire.js";
+import { canonicalSet, canonicalSetV2, ifNoneMatchMatches, resolve, resolveV2 } from "../wire.js";
 
 /**
- * An in-process mock of the Ratel Cloud v1 surface, exposed as a
+ * An in-process mock of the Ratel Cloud surface, exposed as a
  * fetch-compatible handler for `CloudSdkOptions.fetch`. Node-only (SHA-256 via
  * node:crypto).
  *
@@ -33,7 +36,7 @@ export interface MockCloudOptions {
   /** Expected Bearer key. Default "rtl_test_key". */
   apiKey?: string;
   /** Seed published skills (global + per-subject layers). */
-  catalog?: Catalog;
+  catalog?: CatalogV2;
   /** Seed suggestions. */
   suggestions?: Partial<CloudSuggestion>[];
   /** Injectable clock, default `() => new Date().toISOString()`. */
@@ -70,11 +73,14 @@ export class MockCloud {
 
   private readonly now: () => string;
   private seq = 0;
+  /** Preserves source layers even when a conformance vector reuses an id across scopes. */
+  private readonly catalogRows: CloudSkill[] = [];
   private readonly analyzeCache = new Map<string, AnalyzeResult>();
   /** The distilled recurring-ask ledger (`query_intents`), keyed by id. */
   private readonly queryIntents = new Map<string, QueryIntentRow>();
   /** Async jobs, keyed by id. */
   private readonly jobs = new Map<string, JobRow>();
+  private readonly runtimeCatalogOverrides = new Map<string, RuntimeCatalogOverride>();
 
   constructor(options: MockCloudOptions = {}) {
     this.apiKey = options.apiKey ?? "rtl_test_key";
@@ -85,12 +91,22 @@ export class MockCloud {
       Promise.resolve(this.handle(input, init))) as typeof fetch;
   }
 
+  /** Seed or replace one runtime-catalog override. */
+  seedRuntimeCatalogOverride(override: RuntimeCatalogOverride): void {
+    this.runtimeCatalogOverrides.set(runtimeCatalogOverrideKey(override), { ...override });
+  }
+
+  /** Remove every seeded runtime-catalog override. */
+  clearRuntimeCatalogOverrides(): void {
+    this.runtimeCatalogOverrides.clear();
+  }
+
   private nextId(prefix: string): string {
     this.seq += 1;
     return `${prefix}_${this.seq}`;
   }
 
-  private seedCatalog(catalog: Catalog): void {
+  private seedCatalog(catalog: CatalogV2): void {
     for (const sk of catalog.global) this.insertSkill(sk, null, "published");
     for (const [subject, skills] of Object.entries(catalog.subjects ?? {})) {
       for (const sk of skills) this.insertSkill(sk, subject, "published");
@@ -98,7 +114,7 @@ export class MockCloud {
   }
 
   private insertSkill(
-    wire: Omit<WireSkill, "id"> & { id?: string },
+    wire: Omit<WireSkill, "id"> & { id?: string; searchableDescription?: string | null },
     endUserId: string | null,
     status: SkillStatus,
   ): CloudSkill {
@@ -107,6 +123,7 @@ export class MockCloud {
       id: wire.id ?? this.nextId("sk"),
       name: wire.name,
       description: wire.description,
+      searchableDescription: wire.searchableDescription ?? null,
       tags: wire.tags ?? [],
       tools: wire.tools ?? [],
       metadata: wire.metadata ?? {},
@@ -120,6 +137,7 @@ export class MockCloud {
       publishedAt: status === "published" ? ts : null,
     };
     this.skills.set(skill.id, skill);
+    this.catalogRows.push(skill);
     return skill;
   }
 
@@ -159,18 +177,31 @@ export class MockCloud {
     );
     const method = (init?.method ?? "GET").toUpperCase();
     const headers = new Headers(init?.headers);
+    const catalogVersion = catalogVersionFromPath(url.pathname);
 
     if (headers.get("authorization") !== `Bearer ${this.apiKey}`) {
+      if (catalogVersion === 2) {
+        return Response.json(
+          { error: { code: "unauthorized", message: "Invalid or revoked API key." } },
+          { status: 401 },
+        );
+      }
       return Response.json({ error: "Invalid or revoked API key." }, { status: 401 });
     }
 
-    // Accept any base prefix; route on the path after "/api/v1" (or the whole path).
-    const path = url.pathname.replace(/^.*?\/api\/v1/, "") || url.pathname;
+    if (method === "GET" && catalogVersion !== null) {
+      return this.getCatalog(url, headers, catalogVersion);
+    }
+
+    // Accept both the public "/v1" contract and the "/api/v1" application route.
+    const path = url.pathname.replace(/^.*?\/(?:api\/)?v1/, "") || url.pathname;
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     const seg = path.split("/").filter(Boolean);
 
-    if (method === "GET" && path === "/catalog") return this.getCatalog(url, headers);
     if (path === "/skills" && method === "GET") return this.listSkills(url);
+    if (path === "/runtime-catalog/overrides" && method === "GET") {
+      return this.getRuntimeCatalogOverrides(headers);
+    }
     if (path === "/skills" && method === "POST")
       return this.createSkill(body as unknown as NewSkillInput);
     if (path === "/skills/import" && method === "POST")
@@ -197,13 +228,25 @@ export class MockCloud {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
+  private getRuntimeCatalogOverrides(headers: Headers): Response {
+    const body = {
+      overrides: [...this.runtimeCatalogOverrides.values()].sort(compareRuntimeOverrides),
+    };
+    const etag = `"${createHash("sha256").update(JSON.stringify(body), "utf8").digest("hex")}"`;
+    const responseHeaders = { etag, "cache-control": "no-cache" };
+    if (ifNoneMatchMatches(headers.get("if-none-match"), etag)) {
+      return new Response(null, { status: 304, headers: responseHeaders });
+    }
+    return Response.json(body, { headers: responseHeaders });
+  }
+
   /* — catalog ————————————————————————————————————————————————————————————— */
 
   /** The published set as a layered source catalog. */
   private publishedCatalog(): Catalog {
     const global: WireSkill[] = [];
     const subjects: Record<string, WireSkill[]> = {};
-    for (const sk of this.skills.values()) {
+    for (const sk of this.catalogRows) {
       if (sk.status !== "published") continue;
       const wire: WireSkill = {
         id: sk.id,
@@ -225,15 +268,47 @@ export class MockCloud {
     return { global, subjects };
   }
 
-  private getCatalog(url: URL, headers: Headers): Response {
-    const scope = url.searchParams.get("scope");
-    const skills = resolve(this.publishedCatalog(), scope);
-    const hex = createHash("sha256").update(canonicalSet(skills), "utf8").digest("hex");
-    const etag = `"${hex}"`;
-    if (ifNoneMatchMatches(headers.get("if-none-match"), etag)) {
-      return new Response(null, { status: 304, headers: { etag } });
+  /** The v2 published set, including a canonical nullable override. */
+  private publishedCatalogV2(): CatalogV2 {
+    const global: WireSkillV2[] = [];
+    const subjects: Record<string, WireSkillV2[]> = {};
+    for (const skill of this.catalogRows) {
+      if (skill.status !== "published") continue;
+      const wire: WireSkillV2 = {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        searchableDescription: skill.searchableDescription,
+        tags: skill.tags,
+        tools: skill.tools,
+        metadata: skill.metadata,
+        body: skill.body,
+      };
+      if (skill.endUserId === null) {
+        global.push(wire);
+      } else {
+        const layer = subjects[skill.endUserId] ?? [];
+        layer.push(wire);
+        subjects[skill.endUserId] = layer;
+      }
     }
-    return Response.json({ catalogVersion: hex, skills }, { headers: { etag } });
+    return { global, subjects };
+  }
+
+  private getCatalog(url: URL, headers: Headers, version: 1 | 2): Response {
+    const scope = url.searchParams.get("scope");
+    const skills =
+      version === 1
+        ? resolve(this.publishedCatalog(), scope)
+        : resolveV2(this.publishedCatalogV2(), scope);
+    const canonical = version === 1 ? canonicalSet(skills) : canonicalSetV2(skills);
+    const hex = createHash("sha256").update(canonical, "utf8").digest("hex");
+    const etag = `"${hex}"`;
+    const responseHeaders = { etag, "cache-control": "no-cache" };
+    if (ifNoneMatchMatches(headers.get("if-none-match"), etag)) {
+      return new Response(null, { status: 304, headers: responseHeaders });
+    }
+    return Response.json({ catalogVersion: hex, skills }, { headers: responseHeaders });
   }
 
   /* — skills —————————————————————————————————————————————————————————————— */
@@ -343,6 +418,7 @@ export class MockCloud {
       }
       const same =
         existing.description === input.description &&
+        existing.searchableDescription === (input.searchableDescription ?? null) &&
         existing.body === input.body &&
         JSON.stringify(existing.tags) === JSON.stringify(input.tags ?? []) &&
         JSON.stringify(existing.tools) === JSON.stringify(input.tools ?? []);
@@ -351,6 +427,7 @@ export class MockCloud {
       } else {
         Object.assign(existing, {
           description: input.description,
+          searchableDescription: input.searchableDescription ?? null,
           body: input.body,
           tags: input.tags ?? [],
           tools: input.tools ?? [],
@@ -629,4 +706,22 @@ function slugify(text: string): string {
 
 function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
+function catalogVersionFromPath(pathname: string): 1 | 2 | null {
+  if (pathname === "/catalog") return 1;
+  const match = pathname.match(/\/(?:api\/)?v([12])\/catalog$/);
+  if (match?.[1] === "1") return 1;
+  if (match?.[1] === "2") return 2;
+  return null;
+}
+
+function runtimeCatalogOverrideKey(override: RuntimeCatalogOverride): string {
+  return `${override.kind}\0${override.entryId}`;
+}
+
+function compareRuntimeOverrides(a: RuntimeCatalogOverride, b: RuntimeCatalogOverride): number {
+  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  if (a.entryId === b.entryId) return 0;
+  return a.entryId < b.entryId ? -1 : 1;
 }

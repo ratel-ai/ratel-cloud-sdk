@@ -19,6 +19,7 @@ const cloud = new RatelCloudSdk({ apiKey: process.env.RATEL_API_KEY! });
 const skill = await cloud.skills.create({
   name: "deploy-checklist",
   description: "How to deploy safely.",
+  searchableDescription: "release production rollback canary", // optional Retrieval description
   body: "# Deploy\n…",
 });
 await cloud.skills.publish(skill.id, { expectedVersion: skill.version });
@@ -59,8 +60,32 @@ import { ratel } from "@ratel-ai/sdk";
 import * as ratelCloud from "@ratel-ai/cloud-sdk/runtime";
 
 const runtime = ratel();
-const cloudRuntime = ratelCloud.attach(runtime);
+const cloudRuntime = ratelCloud.attach(runtime, { useCloudDefinitions: true });
 ```
+
+`useCloudDefinitions: true` is the one-line adoption path for Cloud-owned Retrieval descriptions.
+It pulls the complete runtime-catalog overlay during attach and applies it to live tools, skills,
+and facts through the core SDK. Definition events emitted after adoption carry
+`ratel.catalog.use_definition_overrides=true`, so Cloud can distinguish an in-sync runtime from one
+that remains locally owned. Omit the flag (or set it to false) to keep local
+`experimentalSearchableDescription` values authoritative and make no overlay request.
+
+Cloud definitions require `@ratel-ai/sdk` >= 0.12.0. Versions 0.10.x and 0.11.x remain supported
+for runtime events and catalog snapshots, but using this flag warns once and keeps local Retrieval
+descriptions active.
+
+The initial pull is fail-open and runs in the background because `attach()` remains synchronous.
+`flush()` and `close()` await it. For later pulls, call
+`cloudRuntime.refreshCloudDefinitions()`; it sends the last strong ETag, treats a `304` as a no-op,
+and applies a changed complete overlay:
+
+```ts
+await cloudRuntime.refreshCloudDefinitions();
+```
+
+Failures warn once per continuous failure period. An initial-pull failure leaves local Retrieval
+descriptions active; a later refresh failure retains the last successfully applied Cloud
+descriptions.
 
 `attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
 remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
@@ -176,6 +201,45 @@ at your discretion. A request that never gets a response (DNS failure, abort, ti
 
 ## API reference
 
+### `cloud.runtimeCatalog` — pull runtime-catalog overrides
+
+Prefer the runtime attach flag above for the standard adoption path. The management client's
+`runtimeCatalog` surface remains available for custom ownership or scheduling flows: pull the
+operator-authored overrides, then re-register local definitions with the matching Retrieval
+descriptions:
+
+```ts
+let previousEtag: string | undefined;
+
+async function syncCloudDefinitions() {
+  const result = await cloud.runtimeCatalog.listOverrides({ ifNoneMatch: previousEtag });
+  if (result.notModified) return; // keep the cached overrides
+
+  previousEtag = result.etag ?? undefined;
+  const toolOverrides = new Map(
+    result.overrides
+      .filter((override) => override.kind === "tool")
+      .map((override) => [override.entryId, override.searchableDescription]),
+  );
+
+  for (const definition of toolDefinitions) {
+    const searchableDescription = toolOverrides.get(definition.id);
+    await runtime.tools.register({
+      ...definition,
+      ...(searchableDescription === undefined ? {} : { experimentalSearchableDescription: searchableDescription }),
+    });
+  }
+}
+```
+
+`listOverrides({ ifNoneMatch })` calls the Bearer-authenticated runtime-catalog endpoint (public
+wire path: `GET /v1/runtime-catalog/overrides`). A fresh result has
+`{ notModified: false, etag, overrides }`; a matching ETag produces
+`{ notModified: true, etag }`, so callers keep their cached overrides. Fresh overrides are sorted
+by `kind` then `entryId`. Each has `kind: "tool" | "skill" | "fact"`, `entryId`, and
+`searchableDescription`. Only entries with an operator override are returned; an invalid project
+key throws `unauthorized`.
+
 ### `cloud.skills` — managed-catalog write surface
 
 Skills live in one project and move through `draft → published → archived`. Every mutation
@@ -206,6 +270,7 @@ project (the server does not distinguish).
 const skill = await cloud.skills.create({
   name: "rotate-db-credentials",       // kebab-case, unique among non-archived skills
   description: "Rotate database credentials without downtime.",
+  searchableDescription: "rotate secrets keys credentials", // optional; null/omitted = description
   body: "# Rotation\n…",
   tags: ["ops"],                       // optional, default []
   tools: ["psql"],                     // optional, default []
@@ -230,6 +295,7 @@ const next = await cloud.skills.update(skill.id, {
   expectedVersion: skill.version,      // guard the edit against concurrent writes
   body: "# Rotation (v2)\n…",
   name: "rotate-credentials",          // renames are allowed
+  searchableDescription: null,         // clear the Retrieval description
 });
 
 await cloud.skills.update(skill.id, { tags: ["ops"] }); // unguarded: applies unconditionally
@@ -253,15 +319,23 @@ Bulk **upsert-by-name** for onboarding an existing skill set — e.g. syncing fr
 application already manages:
 
 ```ts
-const rows = await db.query("SELECT name, description, body, tags FROM playbooks");
+const rows = await db.query(
+  "SELECT name, description, searchable_description, body, tags FROM playbooks",
+);
 const report = await cloud.skills.import(
-  rows.map((r) => ({ name: r.name, description: r.description, body: r.body, tags: r.tags })),
+  rows.map((r) => ({
+    name: r.name,
+    description: r.description,
+    searchableDescription: r.searchable_description,
+    body: r.body,
+    tags: r.tags,
+  })),
 );
 // → { created: ["deploy-checklist"], updated: ["rotate-db-credentials"], unchanged: [] }
 ```
 
 - Matching is by `name` against non-archived skills; content comparison decides
-  `updated` vs `unchanged`, so re-running an import is idempotent.
+  `updated` vs `unchanged`, including override-only edits, so re-running an import is idempotent.
 - Import **never archives**: a skill that exists in cloud but not in your input is left alone.
   Cloud is the source of truth — removal is an explicit `archive` call.
 - Imported updates bump versions like any other edit; concurrent editors will see
@@ -676,10 +750,10 @@ or each span becomes its own root trace.
 
 Your application's test suite shouldn't need a live API key, network access, or quota.
 `@ratel-ai/cloud-sdk/testing` (Node-only) ships `MockCloud` — an in-process, fetch-compatible
-mock of the whole v1 surface, the same one this SDK's own test suite runs against. Routes,
-status codes, and error bodies mirror the server, which matters most for the failure modes you
-can't provoke against production on demand: version races, review races, auth errors — all the
-error-handling paths documented above become three-line test cases.
+mock of the v1 management surface plus both catalog pull versions, the same one this SDK's own
+test suite runs against. Routes, status codes, and error bodies mirror the server, which matters
+most for the failure modes you can't provoke against production on demand: version races, review
+races, auth errors — all the error-handling paths documented above become three-line test cases.
 
 ```ts
 import { RatelCloudSdk, CloudSdkError } from "@ratel-ai/cloud-sdk";
@@ -699,14 +773,26 @@ const cloud = new RatelCloudSdk({ apiKey: mock.apiKey, fetch: mock.fetch });
 // State is inspectable for assertions:
 mock.skills;        // Map<id, CloudSkill>
 mock.suggestions;   // Map<id, CloudSuggestion>
+
+// Runtime-catalog overrides can be seeded and cleared without a live Cloud:
+mock.seedRuntimeCatalogOverride({
+  kind: "tool",
+  entryId: "weather_lookup",
+  searchableDescription: "Current weather and forecasts.",
+});
+mock.clearRuntimeCatalogOverrides();
 ```
 
 What to know when asserting against it:
 
 - Seeded catalog skills are inserted as **published**; a wrong Bearer key gets a 401 like the
   real API.
-- The mock's `GET /catalog` route (the loader's read path) computes ETags with the real
-  `protocol/v1` canonicalization, so loader-side integration tests behave faithfully too.
+- Runtime-catalog overrides are served sorted by `kind` then `entryId`, with the real endpoint's
+  strong payload ETag and matching `If-None-Match` → 304 behavior. Seeding or clearing changed
+  payloads moves the ETag.
+- The mock serves `GET /v1/catalog` and `GET /v2/catalog` (including `/api/…` aliases) with
+  their frozen seven- and eight-field ETags. v1 omits `searchableDescription`; v2 emits it and
+  canonicalizes unset overrides to `null`.
 - The intent **extraction** is a deterministic fixture, not the server pipeline: one intent per
   unique `user` message, covered iff some published skill's name tokens all appear in the
   message text. Don't assert on extraction quality — assert on your handling of the results.
@@ -717,18 +803,22 @@ What to know when asserting against it:
 
 ## Protocol conformance
 
-The catalog wire shape and ETag algorithm are the frozen `protocol/v1` contract. This package
-vendors the protocol's conformance vectors and reproduces them byte-for-byte in `wire.test.ts`.
-The pure canonicalization helpers are exported for tools that need to compute or verify catalog
-identity themselves:
+The catalog wire shapes and ETag algorithms are the frozen `protocol/v1` and `protocol/v2`
+contracts. This package vendors both protocols' conformance vectors and reproduces them
+byte-for-byte. The pure canonicalization helpers are exported for tools that need to compute or
+verify catalog identity themselves:
 
 ```ts
-import { canonicalSet, resolve, ifNoneMatchMatches } from "@ratel-ai/cloud-sdk";
+import {
+  canonicalSetV2,
+  resolveV2,
+  ifNoneMatchMatches,
+} from "@ratel-ai/cloud-sdk";
 import { createHash } from "node:crypto";
 
-const skills = resolve(catalog, "user-123");            // overlay a scope on the global layer
+const skills = resolveV2(catalog, "user-123");          // overlay a scope on the global layer
 const etagHex = createHash("sha256")
-  .update(canonicalSet(skills), "utf8")
+  .update(canonicalSetV2(skills), "utf8")
   .digest("hex");                                       // == the server's catalogVersion
 ifNoneMatchMatches(`"${etagHex}"`, currentEtag);        // RFC 7232 weak comparison
 ```
