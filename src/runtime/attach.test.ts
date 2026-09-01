@@ -872,6 +872,54 @@ describe("attach", () => {
 
     expect(compatible).toBe(sdkRuntime);
   });
+
+  it("carries a tool's retrieval-only description into the published snapshot", async () => {
+    // Regression: toCatalogTool dropped experimentalSearchableDescription, so a
+    // runtime that curated retrieval keywords published only its agent-facing
+    // prose and Cloud silently indexed the wrong half of the pair.
+    const bodies: string[] = [];
+    const runtime = {
+      events: {
+        sourceId: "kestral-app",
+        subscribe: () => ({
+          droppedCount: 0,
+          flush: async () => {},
+          unsubscribe: () => {},
+        }),
+      },
+      catalog: {
+        snapshot: () => ({
+          source_id: "kestral-app",
+          tools: [
+            {
+              id: "add_task_comment",
+              name: "add_task_comment",
+              description: "Add a markdown comment to a task.",
+              experimentalSearchableDescription: "comment note progress retro ping",
+            },
+          ],
+          skills: [],
+        }),
+      },
+    } satisfies RatelRuntime;
+
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      snapshotDebounceMs: 0,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/catalog/snapshot")) bodies.push(String(init?.body));
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+    });
+    await handle.close();
+
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0] ?? "{}").tools[0]).toMatchObject({
+      id: "add_task_comment",
+      description: "Add a markdown comment to a task.",
+      searchable_description: "comment note progress retro ping",
+    });
+  });
 });
 
 class FakeRuntime {

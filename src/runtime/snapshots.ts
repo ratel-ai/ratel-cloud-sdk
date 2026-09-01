@@ -30,6 +30,8 @@ interface CatalogSnapshotToolRequest {
   readonly id: string;
   readonly name: string;
   readonly description: string;
+  /** Absent for a publisher that matches on `description`, which keeps its body byte-identical. */
+  readonly searchable_description?: string;
   readonly input_schema: Record<string, unknown> | null;
   readonly output_schema: Record<string, unknown> | null;
   readonly metadata: Record<string, unknown> | null;
@@ -467,10 +469,27 @@ function normalizeTool(tool: RuntimeCatalogToolDefinition): RuntimeCatalogToolDe
     id: normalizeText(tool.id, CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH) || name,
     name,
     description: normalizeText(tool.description ?? "", CATALOG_SNAPSHOT_MAX_DESCRIPTION_LENGTH),
+    ...normalizedSearchableDescription(tool),
     inputSchema: tool.inputSchema ?? null,
     outputSchema: tool.outputSchema ?? null,
     metadata: tool.metadata ?? null,
   };
+}
+
+/**
+ * Kept out of the object entirely when unset or empty after trimming. An
+ * always-present key would change the canonical body, and therefore the ETag,
+ * for every publisher that never adopted the field.
+ */
+function normalizedSearchableDescription(tool: RuntimeCatalogToolDefinition): {
+  experimentalSearchableDescription?: string;
+} {
+  if (typeof tool.experimentalSearchableDescription !== "string") return {};
+  const normalized = normalizeText(
+    tool.experimentalSearchableDescription,
+    CATALOG_SNAPSHOT_MAX_DESCRIPTION_LENGTH,
+  );
+  return normalized ? { experimentalSearchableDescription: normalized } : {};
 }
 
 function normalizeText(value: string, maxLength: number): string {
@@ -502,6 +521,9 @@ function toToolRequest(tool: RuntimeCatalogToolDefinition): CatalogSnapshotToolR
     id: tool.id,
     name: tool.name,
     description: tool.description ?? "",
+    ...(tool.experimentalSearchableDescription === undefined
+      ? {}
+      : { searchable_description: tool.experimentalSearchableDescription }),
     input_schema: tool.inputSchema ?? null,
     output_schema: tool.outputSchema ?? null,
     metadata: tool.metadata ?? null,

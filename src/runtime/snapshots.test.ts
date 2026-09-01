@@ -739,6 +739,80 @@ describe("CatalogSnapshotsPublisher", () => {
 
     expect(requests).toBe(1);
   });
+
+  it("publishes a retrieval-only description as searchable_description", async () => {
+    // The pair Cloud needs: `description` is what the agent reads, and
+    // `searchable_description` is what prompts are matched against. Dropping
+    // the second here made Cloud index the agent-facing prose instead.
+    const bodies: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return Response.json({}, { headers: { ETag: '"version-1"' } });
+    }) as typeof fetch;
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      baseUrl: "https://cloud.test/api/v1/",
+      fetch: fetchImpl,
+    });
+
+    publisher.publish({
+      source_id: "kestral-app",
+      tools: [
+        {
+          id: "add_task_comment",
+          name: "add_task_comment",
+          description: "Add a markdown comment to a task.",
+          experimentalSearchableDescription: "comment note progress retro ping",
+        },
+      ],
+    });
+    await publisher.flush();
+
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({
+      source_id: "kestral-app",
+      tools: [
+        {
+          id: "add_task_comment",
+          name: "add_task_comment",
+          description: "Add a markdown comment to a task.",
+          searchable_description: "comment note progress retro ping",
+          input_schema: null,
+          output_schema: null,
+          metadata: null,
+        },
+      ],
+    });
+  });
+
+  it("omits the key entirely for a publisher that matches on its description", async () => {
+    // Cloud content-addresses the body, so an always-present key would change
+    // the ETag of every catalog that never adopted the field.
+    const bodies: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return Response.json({}, { headers: { ETag: '"version-1"' } });
+    }) as typeof fetch;
+    const publisher = new CatalogSnapshotsPublisher({
+      apiKey: "rtl_test",
+      baseUrl: "https://cloud.test/api/v1/",
+      fetch: fetchImpl,
+    });
+
+    publisher.publish({
+      source_id: "worker-a",
+      tools: [
+        tool("weather"),
+        // Whitespace is not a retrieval description.
+        { ...tool("calendar"), experimentalSearchableDescription: "   " },
+      ],
+    });
+    await publisher.flush();
+
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({
+      source_id: "worker-a",
+      tools: [wireTool("weather"), wireTool("calendar")],
+    });
+  });
 });
 
 function tool(id: string) {

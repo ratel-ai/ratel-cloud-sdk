@@ -100,6 +100,13 @@ export interface RuntimeCatalogToolDefinition {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
+  /**
+   * ⚠️ Experimental (ADR-0021). What Cloud matches prompts against, when it
+   * differs from what the agent reads. Mirrors the core SDK's spelling because
+   * this is the value `ToolCatalog.snapshot()` already carries; it reaches the
+   * wire as `searchable_description`. Omitted means "match on the description".
+   */
+  readonly experimentalSearchableDescription?: string;
   readonly inputSchema?: Record<string, unknown> | null;
   readonly outputSchema?: Record<string, unknown> | null;
   readonly metadata?: Record<string, unknown> | null;

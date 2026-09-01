@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Runtime-authored Retrieval descriptions now reach Cloud.** `attach()` dropped
+  `experimentalSearchableDescription` when mapping a catalog snapshot onto the wire, so a runtime
+  that curated retrieval-only text published just its agent-facing prose and Cloud indexed the wrong
+  half of the pair. It now travels as `searchable_description` on `PUT /v1/catalog/snapshot`.
+  0.5.0 shipped the Cloud-owned direction (`useCloudDefinitions`) but left the runtime unable to
+  publish its own, which made a Cloud override the only way to match on anything but the description.
+  The key is omitted when unset or blank after trimming, so a publisher that has not adopted it
+  sends a byte-identical body and keeps its catalog version. Requires Cloud to accept the field;
+  older deployments ignore it and fall back to matching on the description.
+
 ## 0.5.0 - 2026-08-21
 
 ### Added

@@ -40,6 +40,8 @@ export interface RatelRuntimeCatalogToolDefinition {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
+  /** ⚠️ Experimental (ADR-0021). Retrieval-only description, published to Cloud. */
+  readonly experimentalSearchableDescription?: string;
   readonly inputSchema?: unknown;
   readonly outputSchema?: unknown;
   readonly metadata?: unknown;
@@ -434,6 +436,12 @@ function toCatalogTool(tool: RatelRuntimeCatalogToolDefinition): RuntimeCatalogT
     id: tool.id,
     name: tool.name,
     ...(tool.description === undefined ? {} : { description: tool.description }),
+    // The core catalog has held this since 0.12.0 and we were dropping it here,
+    // so Cloud indexed the agent-facing prose and every retrieval-only keyword
+    // list a runtime curated was lost on the way out of the process.
+    ...(typeof tool.experimentalSearchableDescription === "string"
+      ? { experimentalSearchableDescription: tool.experimentalSearchableDescription }
+      : {}),
     ...(isRecordOrNull(tool.inputSchema) ? { inputSchema: tool.inputSchema } : {}),
     ...(isRecordOrNull(tool.outputSchema) ? { outputSchema: tool.outputSchema } : {}),
     ...(isRecordOrNull(tool.metadata) ? { metadata: tool.metadata } : {}),
