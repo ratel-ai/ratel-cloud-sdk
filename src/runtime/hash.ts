@@ -5,6 +5,7 @@ interface CanonicalCatalogTool {
   readonly toolId: string;
   readonly name: string;
   readonly description: string;
+  readonly searchableDescription?: string;
   readonly inputSchema: Record<string, unknown> | null;
   readonly outputSchema: Record<string, unknown> | null;
   readonly metadata: Record<string, unknown> | null;
@@ -30,6 +31,14 @@ function canonicalSnapshot(snapshot: RuntimeCatalogSnapshot): CanonicalCatalogSn
         toolId: tool.id,
         name: tool.name,
         description: tool.description ?? "",
+        // Spread only when set. The publisher skips any snapshot whose hash
+        // matches the last one it sent, so a searchable description that
+        // changed on its own has to move this hash or it waits for the
+        // reconcile. Omitting the key when unset keeps existing hashes stable,
+        // and mirrors Cloud's canonical form so the two agree.
+        ...(tool.experimentalSearchableDescription
+          ? { searchableDescription: tool.experimentalSearchableDescription }
+          : {}),
         inputSchema: tool.inputSchema ?? null,
         outputSchema: tool.outputSchema ?? null,
         metadata: tool.metadata ?? null,

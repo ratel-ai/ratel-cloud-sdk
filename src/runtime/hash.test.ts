@@ -89,4 +89,34 @@ describe("hashCatalogSnapshot", () => {
       }),
     ).toBe("941bde1721281135461e8566e5c6c83dec23ef3db9ee12bea6cc4f2193d75c92");
   });
+
+  it("moves when only the searchable description changes, and again when it is cleared", () => {
+    // The publisher skips any snapshot whose hash matches the last one it sent.
+    // A tool whose retrieval text changed on its own would otherwise look
+    // unchanged and sit unsent until the five-minute reconcile.
+    const withText = (searchable?: string) => ({
+      source_id: "worker-a",
+      tools: [
+        {
+          id: "add_task_comment",
+          name: "add_task_comment",
+          description: "Add a markdown comment to a task.",
+          ...(searchable === undefined ? {} : { experimentalSearchableDescription: searchable }),
+        },
+      ],
+    });
+
+    const none = hashCatalogSnapshot(withText());
+    const edited = hashCatalogSnapshot(withText("comment note retro ping"));
+    const rewritten = hashCatalogSnapshot(withText("comment note retro ping followup"));
+    const cleared = hashCatalogSnapshot(withText());
+
+    expect(edited).not.toBe(none);
+    expect(rewritten).not.toBe(edited);
+    // Clearing it returns to the original hash: an absent field and an unset
+    // one are the same catalog, which is what keeps old publishers stable.
+    expect(cleared).toBe(none);
+    // Blank after trimming is also "unset", matching the snapshot serializer.
+    expect(hashCatalogSnapshot(withText("   "))).not.toBe(none);
+  });
 });

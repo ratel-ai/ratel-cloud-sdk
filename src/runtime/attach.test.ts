@@ -878,30 +878,10 @@ describe("attach", () => {
     // runtime that curated retrieval keywords published only its agent-facing
     // prose and Cloud silently indexed the wrong half of the pair.
     const bodies: string[] = [];
-    const runtime = {
-      events: {
-        sourceId: "kestral-app",
-        subscribe: () => ({
-          droppedCount: 0,
-          flush: async () => {},
-          unsubscribe: () => {},
-        }),
-      },
-      catalog: {
-        snapshot: () => ({
-          source_id: "kestral-app",
-          tools: [
-            {
-              id: "add_task_comment",
-              name: "add_task_comment",
-              description: "Add a markdown comment to a task.",
-              experimentalSearchableDescription: "comment note progress retro ping",
-            },
-          ],
-          skills: [],
-        }),
-      },
-    } satisfies RatelRuntime;
+    const runtime = new FakeRuntime();
+    runtime.setTools([
+      { ...tool("add_task_comment"), experimentalSearchableDescription: "comment note retro ping" },
+    ]);
 
     const handle = attach(runtime, {
       apiKey: "rtl_test",
@@ -916,8 +896,8 @@ describe("attach", () => {
     expect(bodies).toHaveLength(1);
     expect(JSON.parse(bodies[0] ?? "{}").tools[0]).toMatchObject({
       id: "add_task_comment",
-      description: "Add a markdown comment to a task.",
-      searchable_description: "comment note progress retro ping",
+      description: "add_task_comment description",
+      searchable_description: "comment note retro ping",
     });
   });
 });
@@ -948,7 +928,9 @@ class FakeRuntime {
     this.#handler?.([event]);
   }
 
-  setTools(tools: Array<ReturnType<typeof tool>>): void {
+  setTools(
+    tools: Array<ReturnType<typeof tool> & { experimentalSearchableDescription?: string }>,
+  ): void {
     this.#tools = tools;
   }
 }
