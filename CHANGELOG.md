@@ -1,18 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-09-02
+
+### Added
+
+- **Runtime-authored Retrieval descriptions.** A tool registered with
+  `experimentalSearchableDescription` now publishes that text to Ratel Cloud as
+  `searchable_description` on `PUT /v1/catalog/snapshot`, so Cloud matches prompts
+  against it while continuing to hand the agent the plain `description`. Requires a
+  Cloud deployment that accepts the field; older deployments ignore it and keep
+  matching on the description.
 
 ### Fixed
 
-- **Runtime-authored Retrieval descriptions now reach Cloud.** `attach()` dropped
-  `experimentalSearchableDescription` when mapping a catalog snapshot onto the wire, so a runtime
-  that curated retrieval-only text published just its agent-facing prose and Cloud indexed the wrong
-  half of the pair. It now travels as `searchable_description` on `PUT /v1/catalog/snapshot`.
-  0.5.0 shipped the Cloud-owned direction (`useCloudDefinitions`) but left the runtime unable to
-  publish its own, which made a Cloud override the only way to match on anything but the description.
-  The key is omitted when unset or blank after trimming, so a publisher that has not adopted it
-  sends a byte-identical body and keeps its catalog version. Requires Cloud to accept the field;
-  older deployments ignore it and fall back to matching on the description.
+- `attach()` dropped `experimentalSearchableDescription` when mapping a catalog
+  snapshot onto the wire, so a runtime that curated retrieval-only text published
+  only its agent-facing prose and Cloud indexed the wrong half of the pair. 0.5.0
+  shipped the Cloud-owned direction (`useCloudDefinitions`) but left the runtime
+  unable to publish its own, which made a Cloud override the only way to match on
+  anything but the description.
+- `hashCatalogSnapshot` did not cover the new field. The publisher skips any
+  snapshot whose hash matches the last one it sent, so a tool whose searchable
+  description changed on its own hashed identically to the version already
+  delivered and waited for the five-minute reconcile. Editing the half of the pair
+  the agent never sees is the ordinary case, not an edge.
+
+### Compatibility
+
+- The key is omitted when unset or blank after trimming, so a publisher that has
+  not adopted it sends a byte-identical body and keeps its catalog version and
+  ETag. Verified against Cloud: the local dedup hash and Cloud's canonical ETag
+  produce byte-identical digests both with and without the field.
 
 ## 0.5.0 - 2026-08-21
 
