@@ -30,6 +30,8 @@ interface CatalogSnapshotToolRequest {
   readonly id: string;
   readonly name: string;
   readonly description: string;
+  /** Absent for a publisher that matches on `description`, which keeps its body byte-identical. */
+  readonly searchable_description?: string;
   readonly input_schema: Record<string, unknown> | null;
   readonly output_schema: Record<string, unknown> | null;
   readonly metadata: Record<string, unknown> | null;
@@ -463,10 +465,17 @@ function prepareSnapshot(snapshot: RuntimeCatalogSnapshot): PreparedCatalogSnaps
 
 function normalizeTool(tool: RuntimeCatalogToolDefinition): RuntimeCatalogToolDefinition {
   const name = normalizeText(tool.name, CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH);
+  const searchable = normalizeText(
+    tool.experimentalSearchableDescription ?? "",
+    CATALOG_SNAPSHOT_MAX_DESCRIPTION_LENGTH,
+  );
   return {
     id: normalizeText(tool.id, CATALOG_SNAPSHOT_MAX_ID_OR_NAME_LENGTH) || name,
     name,
     description: normalizeText(tool.description ?? "", CATALOG_SNAPSHOT_MAX_DESCRIPTION_LENGTH),
+    // Dropped when blank after trimming, so a publisher that never set one
+    // sends a byte-identical body and keeps its catalog version.
+    ...(searchable ? { experimentalSearchableDescription: searchable } : {}),
     inputSchema: tool.inputSchema ?? null,
     outputSchema: tool.outputSchema ?? null,
     metadata: tool.metadata ?? null,
@@ -502,6 +511,9 @@ function toToolRequest(tool: RuntimeCatalogToolDefinition): CatalogSnapshotToolR
     id: tool.id,
     name: tool.name,
     description: tool.description ?? "",
+    ...(tool.experimentalSearchableDescription === undefined
+      ? {}
+      : { searchable_description: tool.experimentalSearchableDescription }),
     input_schema: tool.inputSchema ?? null,
     output_schema: tool.outputSchema ?? null,
     metadata: tool.metadata ?? null,

@@ -872,6 +872,34 @@ describe("attach", () => {
 
     expect(compatible).toBe(sdkRuntime);
   });
+
+  it("carries a tool's retrieval-only description into the published snapshot", async () => {
+    // Regression: toCatalogTool dropped experimentalSearchableDescription, so a
+    // runtime that curated retrieval keywords published only its agent-facing
+    // prose and Cloud silently indexed the wrong half of the pair.
+    const bodies: string[] = [];
+    const runtime = new FakeRuntime();
+    runtime.setTools([
+      { ...tool("add_task_comment"), experimentalSearchableDescription: "comment note retro ping" },
+    ]);
+
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      snapshotDebounceMs: 0,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/catalog/snapshot")) bodies.push(String(init?.body));
+        return Response.json({}, { headers: { ETag: '"published"' } });
+      }) as typeof fetch,
+    });
+    await handle.close();
+
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0] ?? "{}").tools[0]).toMatchObject({
+      id: "add_task_comment",
+      description: "add_task_comment description",
+      searchable_description: "comment note retro ping",
+    });
+  });
 });
 
 class FakeRuntime {
@@ -900,7 +928,9 @@ class FakeRuntime {
     this.#handler?.([event]);
   }
 
-  setTools(tools: Array<ReturnType<typeof tool>>): void {
+  setTools(
+    tools: Array<ReturnType<typeof tool> & { experimentalSearchableDescription?: string }>,
+  ): void {
     this.#tools = tools;
   }
 }
