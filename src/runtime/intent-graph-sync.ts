@@ -137,10 +137,14 @@ export async function attachIntentGraphSync(
   const onReplaced = options.onReplaced;
   const onError = options.onError;
 
-  let graph: IntentGraphType;
+  let graph: IntentGraphType = new IntentGraphCtor();
   let status: IntentGraphSyncStatus = "syncing";
   let etag: string | null = null;
   let savedRev = -1;
+  // One-way ratchet: true once a baseline (200 or 404 not_found) is established.
+  // No PUT is ever attempted before this, so a locally-accumulated graph can
+  // never race its own rev past a stored graph it has never actually seen.
+  let loaded = false;
   let skippedUntilRev: number | null = null;
   let backoffMs = INITIAL_BACKOFF_MS;
   let nextAttemptTimer: ReturnType<typeof setTimeout> | undefined;
@@ -151,6 +155,12 @@ export async function attachIntentGraphSync(
   let closePromise: Promise<void> | undefined;
   let noHandlerWarned = false;
   let errorReportedForCurrentFailure = false;
+  // False only during the very first attempt (the one `attachIntentGraphSync`
+  // itself awaits before returning). A load that succeeds then has nothing to
+  // replace — the app has not been handed a graph yet. Any attempt after that
+  // one runs as a background retry while the app already holds `sync.graph`,
+  // so a stored graph discovered then is a genuine replacement (onReplaced).
+  let firstAttemptDone = false;
 
   function reportError(err: IntentGraphSyncError): void {
     try {
@@ -294,25 +304,40 @@ export async function attachIntentGraphSync(
     nextAttemptTimer.unref?.();
   }
 
+  /** Shared by every failure branch (load-retry, conflict re-fetch, PUT) that
+   * should keep retrying on a growing backoff without blocking the caller. */
+  function scheduleRetryOnFailure(retryAfterMs: number | undefined): void {
+    awaitingBackoff = true;
+    scheduleAttempt(retryAfterMs ?? nextBackoffDelay());
+  }
+
+  /** Adopts an already-fetched authoritative graph — used both when Cloud
+   * rejects a save as stale (409) and when a delayed initial load finally
+   * discovers a stored graph after local usage accumulated during an outage. */
+  function adoptGraphFromCloud(outcome: GetOk): void {
+    graph = IntentGraphCtor.fromJson(outcome.graphJson);
+    etag = outcome.etag;
+    savedRev = graph.rev;
+    loaded = true;
+    if (onReplaced) {
+      try {
+        onReplaced(graph);
+      } catch {
+        // User-provided callbacks remain fail-open.
+      }
+      noHandlerWarned = false;
+    } else {
+      warnReplacedWithoutHandlerOnce();
+    }
+    status = "idle";
+    backoffMs = INITIAL_BACKOFF_MS;
+    errorReportedForCurrentFailure = false;
+  }
+
   async function handleConflict(): Promise<void> {
     const outcome = await doGet(null);
     if (outcome.kind === "ok") {
-      graph = IntentGraphCtor.fromJson(outcome.graphJson);
-      etag = outcome.etag;
-      savedRev = graph.rev;
-      if (onReplaced) {
-        try {
-          onReplaced(graph);
-        } catch {
-          // User-provided callbacks remain fail-open.
-        }
-        noHandlerWarned = false;
-      } else {
-        warnReplacedWithoutHandlerOnce();
-      }
-      status = "idle";
-      backoffMs = INITIAL_BACKOFF_MS;
-      errorReportedForCurrentFailure = false;
+      adoptGraphFromCloud(outcome);
       return;
     }
     // The re-fetch itself failed — keep the stale graph/etag and retry on the
@@ -323,8 +348,67 @@ export async function attachIntentGraphSync(
       status: null,
       message: "failed to fetch the newer graph after a conflict",
     });
-    awaitingBackoff = true;
-    scheduleAttempt(nextBackoffDelay());
+    scheduleRetryOnFailure(undefined);
+  }
+
+  async function runLoadRetryOnce(): Promise<void> {
+    status = "syncing";
+    const outcome = await doGet(null);
+    if (outcome.kind === "ok") {
+      if (firstAttemptDone) {
+        // A retry after a prior failure: the app already holds `sync.graph`
+        // and may have mutated it, so this is a genuine replacement.
+        adoptGraphFromCloud(outcome);
+      } else {
+        // The very first attempt: nothing has been exposed to the app yet.
+        graph = IntentGraphCtor.fromJson(outcome.graphJson);
+        etag = outcome.etag;
+        savedRev = graph.rev;
+        loaded = true;
+        status = "idle";
+      }
+      return;
+    }
+    if (outcome.kind === "not_found") {
+      loaded = true;
+      // Whatever the local graph accumulated while unreachable becomes the
+      // first version to persist — nothing was stored to conflict with.
+      savedRev = graph.rev;
+      status = "idle";
+      backoffMs = INITIAL_BACKOFF_MS;
+      errorReportedForCurrentFailure = false;
+      return;
+    }
+    if (outcome.kind === "feature_disabled") {
+      status = "disabled";
+      try {
+        console.warn(
+          `[ratel-cloud-sdk/runtime] intent_graph_disabled: Ratel Cloud has intent graph sync ` +
+            `disabled for this project — sync is inactive for source ${JSON.stringify(sourceId)}`,
+        );
+      } catch {
+        // Console diagnostics remain fail-open.
+      }
+      try {
+        subscription.unsubscribe();
+      } catch {
+        // Detach failures cannot escape into host shutdown.
+      }
+      return;
+    }
+    const kind: IntentGraphSyncErrorKind =
+      outcome.kind === "auth"
+        ? "auth"
+        : outcome.kind === "rate_limited"
+          ? "rate_limited"
+          : "network";
+    reportErrorOnce({
+      kind,
+      status: kind === "auth" ? 401 : kind === "rate_limited" ? 429 : null,
+      message: "failed to load the intent graph from Ratel Cloud",
+    });
+    status = "error";
+    scheduleRetryOnFailure(outcome.kind === "rate_limited" ? outcome.retryAfterMs : undefined);
   }
 
   async function handlePutOutcome(outcome: PutOutcome, revAtSend: number): Promise<void> {
@@ -371,8 +455,7 @@ export async function attachIntentGraphSync(
           status: 401,
           message: "Ratel Cloud rejected the API key",
         });
-        awaitingBackoff = true;
-        scheduleAttempt(nextBackoffDelay());
+        scheduleRetryOnFailure(undefined);
         return;
       }
       case "rate_limited": {
@@ -382,8 +465,7 @@ export async function attachIntentGraphSync(
           status: 429,
           message: "Ratel Cloud is rate limiting intent graph sync",
         });
-        awaitingBackoff = true;
-        scheduleAttempt(outcome.retryAfterMs ?? nextBackoffDelay());
+        scheduleRetryOnFailure(outcome.retryAfterMs);
         return;
       }
       case "network": {
@@ -393,8 +475,7 @@ export async function attachIntentGraphSync(
           status: null,
           message: "Ratel Cloud intent graph sync failed",
         });
-        awaitingBackoff = true;
-        scheduleAttempt(nextBackoffDelay());
+        scheduleRetryOnFailure(undefined);
         return;
       }
     }
@@ -417,9 +498,9 @@ export async function attachIntentGraphSync(
     }
     clearNextAttemptTimer();
     awaitingBackoff = false;
-    const promise = runAttemptOnce().finally(() => {
+    const promise = (loaded ? runAttemptOnce() : runLoadRetryOnce()).finally(() => {
       inFlightPromise = undefined;
-      if (dirty && !closed && status !== "disabled") {
+      if (loaded && dirty && !closed && status !== "disabled") {
         scheduleAttempt(debounceMs);
       }
     });
@@ -434,7 +515,7 @@ export async function attachIntentGraphSync(
   }
 
   function onEventsBatch(batch: readonly RuntimeEvent[]): void {
-    if (closed || status === "disabled") return;
+    if (closed || status === "disabled" || !loaded) return;
     const qualifies = batch.some((event) => QUALIFYING_EVENT_TYPES.has(event.type));
     if (!qualifies || !hasUnsavedChange()) return;
     dirty = true;
@@ -447,6 +528,10 @@ export async function attachIntentGraphSync(
     if (status === "disabled") return;
     if (inFlightPromise) {
       await inFlightPromise.catch(() => {});
+      return;
+    }
+    if (!loaded) {
+      await triggerAttempt().catch(() => {});
       return;
     }
     if (!hasUnsavedChange() && !dirty) return;
@@ -473,53 +558,12 @@ export async function attachIntentGraphSync(
     return closePromise;
   }
 
-  // — Load —
-  const loadOutcome = await doGet(null);
-  if (loadOutcome.kind === "ok") {
-    graph = IntentGraphCtor.fromJson(loadOutcome.graphJson);
-    etag = loadOutcome.etag;
-    savedRev = graph.rev;
-    status = "idle";
-  } else if (loadOutcome.kind === "not_found") {
-    graph = new IntentGraphCtor();
-    savedRev = graph.rev;
-    status = "idle";
-  } else if (loadOutcome.kind === "feature_disabled") {
-    graph = new IntentGraphCtor();
-    status = "disabled";
-    try {
-      console.warn(
-        `[ratel-cloud-sdk/runtime] intent_graph_disabled: Ratel Cloud has intent graph sync ` +
-          `disabled for this project — sync is inactive for source ${JSON.stringify(sourceId)}`,
-      );
-    } catch {
-      // Console diagnostics remain fail-open.
-    }
-    // Terminal: no subscription, no further network activity, ever.
-    return {
-      graph,
-      status: "disabled",
-      flush: async () => {},
-      close: async () => {},
-    };
-  } else {
-    graph = new IntentGraphCtor();
-    savedRev = graph.rev;
-    status = "error";
-    const kind: IntentGraphSyncErrorKind =
-      loadOutcome.kind === "auth"
-        ? "auth"
-        : loadOutcome.kind === "rate_limited"
-          ? "rate_limited"
-          : "network";
-    reportErrorOnce({
-      kind,
-      status: kind === "auth" ? 401 : kind === "rate_limited" ? 429 : null,
-      message: "failed to load the intent graph from Ratel Cloud — starting from an empty graph",
-    });
-  }
-
   const subscription = catalog.events.subscribe(onEventsBatch);
+  // The initial load is just the first attempt of the same load-retry/save loop:
+  // on failure it arms a background retry and resolves anyway, so the caller
+  // is never blocked waiting on Cloud (see runLoadRetryOnce for outcomes).
+  await triggerAttempt();
+  firstAttemptDone = true;
 
   return {
     get graph() {

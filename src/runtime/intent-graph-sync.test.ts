@@ -173,7 +173,7 @@ describe("attachIntentGraphSync", () => {
       warn.mockRestore();
     });
 
-    it("GET 500 falls back to an empty graph, reports once, and a later PUT still succeeds", async () => {
+    it("GET 500 falls back to an empty graph, reports once, retries the GET (not a PUT), and later saves", async () => {
       vi.useFakeTimers();
       const catalog = new FakeCatalog();
       const errors: unknown[] = [];
@@ -181,27 +181,119 @@ describe("attachIntentGraphSync", () => {
       const fetchImpl = (async () => {
         requests += 1;
         if (requests === 1) return jsonResponse({}, { status: 500 });
-        return jsonResponse({ rev: 1, unchanged: false }, { headers: { ETag: '"e2"' } });
+        if (requests === 2) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({ rev: 1 }, { headers: { ETag: '"e2"' } });
       }) as typeof fetch;
 
       const sync = await attachIntentGraphSync(catalog, {
         apiKey: "rtl_test",
         fetch: fetchImpl,
         debounceMs: 10,
+        random: NO_JITTER,
         onError: (err) => errors.push(err),
       });
 
       expect(sync.status).toBe("error");
       expect(errors).toHaveLength(1);
       expect((sync.graph as unknown as FakeIntentGraphLike).clusterCount).toBe(0);
+      expect(requests).toBe(1);
 
+      // The load-failure backoff retries the GET, not a PUT — a qualifying
+      // event alone must not trigger a save before a baseline is loaded.
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(9);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000); // INITIAL_BACKOFF_MS
+      expect(requests).toBe(2);
+      expect(sync.status).toBe("idle");
+
+      // Now that a baseline (not_found) is established, a fresh qualifying
+      // event debounce-triggers the first real PUT.
       (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
       catalog.emit("invoke_start");
       await vi.advanceTimersByTimeAsync(10);
-
-      expect(requests).toBe(2);
+      expect(requests).toBe(3);
       expect(sync.status).toBe("idle");
+
       await sync.close();
+    });
+
+    it("a load retry that finds a stored graph discards local usage and calls onReplaced", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const replaced: unknown[] = [];
+      let requests = 0;
+      const fetchImpl = (async () => {
+        requests += 1;
+        if (requests === 1) return jsonResponse({}, { status: 500 });
+        return jsonResponse(
+          {
+            sourceId: "billing-agent",
+            rev: 20,
+            graph: { v: 1, rev: 20, clusters: [{ members: [] }, { members: [] }] },
+          },
+          { headers: { ETag: '"cloud-etag"' } },
+        );
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 10,
+        random: NO_JITTER,
+        onReplaced: (graph) => replaced.push(graph),
+      });
+
+      // Local usage accumulates during the outage, racing rev past whatever
+      // the (unknown to us) stored graph's rev might be.
+      for (let index = 0; index < 5; index += 1) {
+        (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      }
+      expect((sync.graph as unknown as FakeIntentGraphLike).rev).toBe(5);
+
+      await vi.advanceTimersByTimeAsync(1_000); // INITIAL_BACKOFF_MS -> retry GET
+      expect(requests).toBe(2);
+      expect(replaced).toHaveLength(1);
+      expect((replaced[0] as FakeIntentGraphLike).rev).toBe(20);
+      expect((sync.graph as unknown as FakeIntentGraphLike).rev).toBe(20);
+      expect(sync.status).toBe("idle");
+
+      // Critically: the locally-bumped (rev 5) graph was never PUT.
+      expect(requests).toBe(2);
+      await sync.close();
+    });
+
+    it("a load retry that finds feature_disabled goes terminal", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const catalog = new FakeCatalog();
+      let requests = 0;
+      const fetchImpl = (async () => {
+        requests += 1;
+        if (requests === 1) return jsonResponse({}, { status: 500 });
+        return jsonResponse({ error: "feature_disabled" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 10,
+        random: NO_JITTER,
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(requests).toBe(2);
+      expect(sync.status).toBe("disabled");
+      expect(catalog.unsubscribed).toBe(true);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests).toBe(2);
+
+      await sync.close();
+      warn.mockRestore();
     });
   });
 
