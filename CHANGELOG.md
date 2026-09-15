@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+### Added
+
+- **Intent graph sync.** `attachIntentGraphSync` (under `@ratel-ai/cloud-sdk/runtime`) is a
+  fail-open courier between an app's in-memory adaptive-ranking `IntentGraph` (ADR-0014,
+  requires `@ratel-ai/sdk` >=0.12.0) and Ratel Cloud's per-project, per-source-id graph
+  storage. It loads the graph on attach, watches the runtime's own event stream for usage
+  that moves the graph's revision, debounce-saves changes back to Cloud, and resolves
+  multi-writer conflicts by re-fetching the newer graph and handing it to `onReplaced`.
+  Saving never starts before a load has actually established a baseline, so a
+  locally-accumulated graph can never overwrite a stored one it has never seen; a disabled
+  feature flag or a rejected API key stop the sync outright instead of retrying forever.
+  See the README's "Intent graph sync" section.
+
 ## 0.6.0 - 2026-09-02
 
 ### Added
