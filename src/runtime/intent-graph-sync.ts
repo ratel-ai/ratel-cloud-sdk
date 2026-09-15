@@ -85,6 +85,7 @@ type PutOutcome =
   | { readonly kind: "conflict" }
   | { readonly kind: "invalid_graph" }
   | { readonly kind: "rejected" }
+  | { readonly kind: "feature_disabled" }
   | { readonly kind: "auth" }
   | { readonly kind: "rate_limited"; readonly retryAfterMs: number | undefined }
   | { readonly kind: "network" };
@@ -269,6 +270,9 @@ export async function attachIntentGraphSync(
     const errorCode = typeof respBody?.error === "string" ? respBody.error : undefined;
     if (response.status === 409 && errorCode === "stale_graph") return { kind: "conflict" };
     if (response.status === 400 && errorCode === "invalid_graph") return { kind: "invalid_graph" };
+    if (response.status === 404 && errorCode === "feature_disabled") {
+      return { kind: "feature_disabled" };
+    }
     if (response.status === 401) return { kind: "auth" };
     if (response.status === 413 || response.status === 415) return { kind: "rejected" };
     if (response.status === 429) {
@@ -309,6 +313,27 @@ export async function attachIntentGraphSync(
   function scheduleRetryOnFailure(retryAfterMs: number | undefined): void {
     awaitingBackoff = true;
     scheduleAttempt(retryAfterMs ?? nextBackoffDelay());
+  }
+
+  /** Terminal: Cloud has this project's intent graph sync turned off. Reached
+   * from either a GET (load) or a PUT (save) — waiting never recovers this,
+   * so there is no retry here, and every other path already treats
+   * `status === "disabled"` as a stop condition, so this only ever runs once. */
+  function goTerminalDisabled(): void {
+    status = "disabled";
+    try {
+      console.warn(
+        `[ratel-cloud-sdk/runtime] intent_graph_disabled: Ratel Cloud has intent graph sync ` +
+          `disabled for this project — sync is inactive for source ${JSON.stringify(sourceId)}`,
+      );
+    } catch {
+      // Console diagnostics remain fail-open.
+    }
+    try {
+      subscription.unsubscribe();
+    } catch {
+      // Detach failures cannot escape into host shutdown.
+    }
   }
 
   /** Adopts an already-fetched authoritative graph — used both when Cloud
@@ -380,20 +405,7 @@ export async function attachIntentGraphSync(
       return;
     }
     if (outcome.kind === "feature_disabled") {
-      status = "disabled";
-      try {
-        console.warn(
-          `[ratel-cloud-sdk/runtime] intent_graph_disabled: Ratel Cloud has intent graph sync ` +
-            `disabled for this project — sync is inactive for source ${JSON.stringify(sourceId)}`,
-        );
-      } catch {
-        // Console diagnostics remain fail-open.
-      }
-      try {
-        subscription.unsubscribe();
-      } catch {
-        // Detach failures cannot escape into host shutdown.
-      }
+      goTerminalDisabled();
       return;
     }
     const kind: IntentGraphSyncErrorKind =
@@ -446,6 +458,10 @@ export async function attachIntentGraphSync(
           message: "Ratel Cloud rejected the graph payload (size or content type)",
           rev: revAtSend,
         });
+        return;
+      }
+      case "feature_disabled": {
+        goTerminalDisabled();
         return;
       }
       case "auth": {

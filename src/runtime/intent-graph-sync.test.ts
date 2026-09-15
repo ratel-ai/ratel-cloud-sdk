@@ -295,6 +295,43 @@ describe("attachIntentGraphSync", () => {
       await sync.close();
       warn.mockRestore();
     });
+
+    it("PUT 404 feature_disabled goes terminal", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const catalog = new FakeCatalog();
+      let requests = 0;
+      const fetchImpl = (async () => {
+        requests += 1;
+        if (requests === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({ error: "feature_disabled" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 10,
+        random: NO_JITTER,
+      });
+      expect(sync.status).toBe("idle");
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(requests).toBe(2);
+      expect(sync.status).toBe("disabled");
+      expect(catalog.unsubscribed).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests).toBe(2);
+
+      await sync.close();
+      warn.mockRestore();
+    });
   });
 
   describe("save", () => {
