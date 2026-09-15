@@ -797,6 +797,44 @@ describe("attachIntentGraphSync", () => {
 
       await sync.close();
     });
+
+    it("reports 413 once and never retries that revision, but a later rev bump does PUT", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) return new Response(null, { status: 413 });
+        return jsonResponse({ rev: 2 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 100,
+        onError: (err) => errors.push(err),
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(call).toBe(2);
+      expect(errors).toEqual([expect.objectContaining({ kind: "invalid_graph" })]);
+      expect(sync.status).toBe("idle");
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(call).toBe(2); // same revision never retried
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(call).toBe(3);
+
+      await sync.close();
+    });
   });
 
   describe("privacy", () => {
