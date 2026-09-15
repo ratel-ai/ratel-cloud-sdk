@@ -18,9 +18,7 @@ export type IntentGraphSyncErrorKind =
   | "auth"
   | "rate_limited"
   | "invalid_graph"
-  | "feature_disabled"
-  | "conflict"
-  | "setup";
+  | "feature_disabled";
 
 /** Never carries graph content — only rev, status, and a human-readable reason. */
 export interface IntentGraphSyncError {
