@@ -197,6 +197,42 @@ The transport does **no retries**: mutations are not idempotent, and reads are c
 at your discretion. A request that never gets a response (DNS failure, abort, timeout) throws a
 `CloudSdkError` with `code: "network_error"` and `status: null` — see [Errors](#errors).
 
+### Intent graph sync (adaptive usage ranking)
+
+`attachIntentGraphSync` is the courier between an app's in-memory `IntentGraph` (ADR-0014,
+adaptive usage ranking, from `@ratel-ai/sdk` >=0.12.0) and Ratel Cloud's per-project,
+per-source-id graph storage. The SDK owns no storage itself: on attach it loads the graph for
+`sourceId` from Cloud (or starts empty if none exists yet), watches the runtime's own event
+stream for usage that moves `graph.rev`, and debounce-saves changes back to Cloud. Ranking
+itself is never enabled or disabled by this function — call the catalog's own
+`experimentalEnableAdaptiveRanking`/`experimentalDisableAdaptiveRanking` yourself:
+
+```ts
+const sync = await attachIntentGraphSync(catalog, {
+  sourceId: "billing-agent",
+  onReplaced: (graph) => {
+    catalog.experimentalDisableAdaptiveRanking();
+    catalog.experimentalEnableAdaptiveRanking(graph);
+  },
+});
+catalog.experimentalEnableAdaptiveRanking(sync.graph);
+```
+
+`onReplaced` fires when Cloud rejects a save because another process wrote a newer graph first
+(HTTP 409): the SDK re-fetches the newer graph, replaces its own in-memory reference, and hands
+it to you so ranking can be re-armed against current data — the rejected write is never retried.
+Graph JSON is treated as opaque: this package never inspects, filters, or logs its contents
+(cluster members are raw user queries); only `rev`, cluster count, and byte size ever appear in
+diagnostics.
+
+Sync is fail-open like the rest of this package — network failures and 5xx responses retry
+forever with exponential backoff (capped at 30 seconds) and never throw into the caller or block
+ranking; a 429 honors `Retry-After`. Unlike `attach()`, calling `attachIntentGraphSync` a second
+time for the same `catalog` throws — each catalog gets exactly one sync. Set
+`RATEL_CLOUD_INTENT_GRAPH=off` to disable it entirely (no network activity, an empty in-memory
+graph), matching `RATEL_CLOUD_EVENTS=off` for events. Call `sync.close()` during shutdown to
+flush a pending save and unsubscribe; there is no global registration to clean up on its behalf.
+
 ---
 
 ## API reference

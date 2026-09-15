@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as root from "../index.js";
-import { attach, CatalogSnapshotsPublisher, hashCatalogSnapshot } from "./index.js";
+import {
+  attach,
+  attachIntentGraphSync,
+  CatalogSnapshotsPublisher,
+  hashCatalogSnapshot,
+} from "./index.js";
 
 const PKG = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../../package.json"), "utf8"),
@@ -29,8 +34,13 @@ describe("the /runtime subpath", () => {
     expect(attach).toBeTypeOf("function");
   });
 
+  it("exports intent graph sync", () => {
+    expect(attachIntentGraphSync).toBeTypeOf("function");
+  });
+
   it("keeps runtime attachment off the dependency-free root", () => {
     expect(root).not.toHaveProperty("attach");
+    expect(root).not.toHaveProperty("attachIntentGraphSync");
   });
 
   it("declares the runtime-events SDK floor as an optional peer", () => {
