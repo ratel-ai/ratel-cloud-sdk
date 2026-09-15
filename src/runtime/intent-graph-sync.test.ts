@@ -585,6 +585,96 @@ describe("attachIntentGraphSync", () => {
 
       await sync.close();
     });
+
+    it("a feature_disabled while re-fetching after a conflict goes terminal", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) {
+          return jsonResponse(
+            { sourceId: "billing-agent", rev: 1, graph: { v: 1, rev: 1, clusters: [] } },
+            { headers: { ETag: '"e1"' } },
+          );
+        }
+        if (call === 2) return jsonResponse({ error: "stale_graph", rev: 9 }, { status: 409 });
+        return jsonResponse({ error: "feature_disabled" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 100,
+        random: NO_JITTER,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(call).toBe(3);
+      expect(sync.status).toBe("disabled");
+      expect(catalog.unsubscribed).toBe(true);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(call).toBe(3);
+
+      await sync.close();
+    });
+
+    it("a 429 while re-fetching after a conflict honors Retry-After", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) {
+          return jsonResponse(
+            { sourceId: "billing-agent", rev: 1, graph: { v: 1, rev: 1, clusters: [] } },
+            { headers: { ETag: '"e1"' } },
+          );
+        }
+        if (call === 2) return jsonResponse({ error: "stale_graph", rev: 9 }, { status: 409 });
+        if (call === 3) {
+          return jsonResponse(
+            { error: "rate_limited" },
+            { status: 429, headers: { "Retry-After": "5" } },
+          );
+        }
+        return jsonResponse(
+          { sourceId: "billing-agent", rev: 9, graph: { v: 1, rev: 9, clusters: [] } },
+          { headers: { ETag: '"cloud-etag"' } },
+        );
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 100,
+        random: NO_JITTER,
+        onError: (err) => errors.push(err),
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(call).toBe(3);
+      expect(errors).toEqual([expect.objectContaining({ kind: "rate_limited" })]);
+
+      // The exponential default (~1000ms) must not fire the retry early.
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(call).toBe(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(4);
+      expect(sync.status).toBe("idle");
+
+      await sync.close();
+    });
   });
 
   describe("resilience", () => {

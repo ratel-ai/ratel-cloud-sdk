@@ -344,6 +344,37 @@ export async function attachIntentGraphSync(
     }
   }
 
+  /** Shared by every `doGet` caller for the outcomes that aren't a legitimate
+   * "nothing to adopt yet" (`not_found` means different things at each call
+   * site, so callers handle it themselves before delegating here). */
+  function handleGetFailure(
+    outcome: Exclude<GetOutcome, GetOk | { readonly kind: "not_found" }>,
+    action: string,
+  ): void {
+    if (outcome.kind === "feature_disabled") {
+      goTerminalDisabled();
+      return;
+    }
+    status = "error";
+    if (outcome.kind === "auth") {
+      authFailed = true;
+      reportErrorOnce({
+        kind: "auth",
+        status: 401,
+        message: `Ratel Cloud rejected the API key while trying to ${action}`,
+      });
+      return;
+    }
+    const kind: IntentGraphSyncErrorKind =
+      outcome.kind === "rate_limited" ? "rate_limited" : "network";
+    reportErrorOnce({
+      kind,
+      status: kind === "rate_limited" ? 429 : null,
+      message: `failed to ${action}`,
+    });
+    scheduleRetryOnFailure(outcome.kind === "rate_limited" ? outcome.retryAfterMs : undefined);
+  }
+
   /** Adopts an already-fetched authoritative graph — used both when Cloud
    * rejects a save as stale (409) and when a delayed initial load finally
    * discovers a stored graph after local usage accumulated during an outage. */
@@ -373,25 +404,19 @@ export async function attachIntentGraphSync(
       adoptGraphFromCloud(outcome);
       return;
     }
-    if (outcome.kind === "auth") {
+    if (outcome.kind === "not_found") {
+      // Cloud just rejected the PUT as stale but now claims nothing is
+      // stored — an inconsistent response; treat it as transient and retry.
       status = "error";
-      authFailed = true;
       reportErrorOnce({
-        kind: "auth",
-        status: 401,
-        message: "Ratel Cloud rejected the API key while fetching the newer graph after a conflict",
+        kind: "network",
+        status: null,
+        message: "failed to fetch the newer graph after a conflict",
       });
+      scheduleRetryOnFailure(undefined);
       return;
     }
-    // The re-fetch itself failed — keep the stale graph/etag and retry on the
-    // normal backoff; the next confirmed invoke (or this retry) picks it up.
-    status = "error";
-    reportErrorOnce({
-      kind: "network",
-      status: null,
-      message: "failed to fetch the newer graph after a conflict",
-    });
-    scheduleRetryOnFailure(undefined);
+    handleGetFailure(outcome, "fetch the newer graph after a conflict");
   }
 
   async function runLoadRetryOnce(): Promise<void> {
@@ -422,29 +447,7 @@ export async function attachIntentGraphSync(
       errorReportedForCurrentFailure = false;
       return;
     }
-    if (outcome.kind === "feature_disabled") {
-      goTerminalDisabled();
-      return;
-    }
-    if (outcome.kind === "auth") {
-      status = "error";
-      authFailed = true;
-      reportErrorOnce({
-        kind: "auth",
-        status: 401,
-        message: "Ratel Cloud rejected the API key — intent graph sync has stopped",
-      });
-      return;
-    }
-    const kind: IntentGraphSyncErrorKind =
-      outcome.kind === "rate_limited" ? "rate_limited" : "network";
-    reportErrorOnce({
-      kind,
-      status: kind === "rate_limited" ? 429 : null,
-      message: "failed to load the intent graph from Ratel Cloud",
-    });
-    status = "error";
-    scheduleRetryOnFailure(outcome.kind === "rate_limited" ? outcome.retryAfterMs : undefined);
+    handleGetFailure(outcome, "load the intent graph from Ratel Cloud");
   }
 
   async function handlePutOutcome(outcome: PutOutcome, revAtSend: number): Promise<void> {
