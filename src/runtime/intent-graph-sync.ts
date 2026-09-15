@@ -162,6 +162,10 @@ export async function attachIntentGraphSync(
   // one runs as a background retry while the app already holds `sync.graph`,
   // so a stored graph discovered then is a genuine replacement (onReplaced).
   let firstAttemptDone = false;
+  // One-way ratchet: a revoked/invalid key never becomes valid by waiting, so
+  // once set, nothing schedules another attempt again — this is a distinct
+  // terminal state from `status === "disabled"` (that's Cloud's feature flag).
+  let authFailed = false;
 
   function reportError(err: IntentGraphSyncError): void {
     try {
@@ -365,6 +369,16 @@ export async function attachIntentGraphSync(
       adoptGraphFromCloud(outcome);
       return;
     }
+    if (outcome.kind === "auth") {
+      status = "error";
+      authFailed = true;
+      reportErrorOnce({
+        kind: "auth",
+        status: 401,
+        message: "Ratel Cloud rejected the API key while fetching the newer graph after a conflict",
+      });
+      return;
+    }
     // The re-fetch itself failed — keep the stale graph/etag and retry on the
     // normal backoff; the next confirmed invoke (or this retry) picks it up.
     status = "error";
@@ -408,15 +422,21 @@ export async function attachIntentGraphSync(
       goTerminalDisabled();
       return;
     }
+    if (outcome.kind === "auth") {
+      status = "error";
+      authFailed = true;
+      reportErrorOnce({
+        kind: "auth",
+        status: 401,
+        message: "Ratel Cloud rejected the API key — intent graph sync has stopped",
+      });
+      return;
+    }
     const kind: IntentGraphSyncErrorKind =
-      outcome.kind === "auth"
-        ? "auth"
-        : outcome.kind === "rate_limited"
-          ? "rate_limited"
-          : "network";
+      outcome.kind === "rate_limited" ? "rate_limited" : "network";
     reportErrorOnce({
       kind,
-      status: kind === "auth" ? 401 : kind === "rate_limited" ? 429 : null,
+      status: kind === "rate_limited" ? 429 : null,
       message: "failed to load the intent graph from Ratel Cloud",
     });
     status = "error";
@@ -466,13 +486,13 @@ export async function attachIntentGraphSync(
       }
       case "auth": {
         status = "error";
+        authFailed = true;
         reportErrorOnce({
           kind: "auth",
           status: 401,
-          message: "Ratel Cloud rejected the API key",
+          message: "Ratel Cloud rejected the API key — intent graph sync has stopped",
         });
-        scheduleRetryOnFailure(undefined);
-        return;
+        return; // no scheduleRetryOnFailure: waiting never fixes a revoked key
       }
       case "rate_limited": {
         status = "error";
@@ -507,7 +527,7 @@ export async function attachIntentGraphSync(
   }
 
   function triggerAttempt(): Promise<void> {
-    if (closed || status === "disabled") return Promise.resolve();
+    if (closed || status === "disabled" || authFailed) return Promise.resolve();
     if (inFlightPromise) {
       dirty = true;
       return inFlightPromise;
@@ -531,7 +551,7 @@ export async function attachIntentGraphSync(
   }
 
   function onEventsBatch(batch: readonly RuntimeEvent[]): void {
-    if (closed || status === "disabled" || !loaded) return;
+    if (closed || status === "disabled" || authFailed || !loaded) return;
     const qualifies = batch.some((event) => QUALIFYING_EVENT_TYPES.has(event.type));
     if (!qualifies || !hasUnsavedChange()) return;
     dirty = true;
@@ -541,7 +561,7 @@ export async function attachIntentGraphSync(
   }
 
   async function flush(): Promise<void> {
-    if (status === "disabled") return;
+    if (status === "disabled" || authFailed) return;
     if (inFlightPromise) {
       await inFlightPromise.catch(() => {});
       return;

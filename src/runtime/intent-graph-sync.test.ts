@@ -544,6 +544,47 @@ describe("attachIntentGraphSync", () => {
       await sync.close();
       warn.mockRestore();
     });
+
+    it("a 401 while re-fetching after a conflict stops retrying", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) {
+          return jsonResponse(
+            { sourceId: "billing-agent", rev: 1, graph: { v: 1, rev: 1, clusters: [] } },
+            { headers: { ETag: '"e1"' } },
+          );
+        }
+        if (call === 2) return jsonResponse({ error: "stale_graph", rev: 9 }, { status: 409 });
+        return jsonResponse({}, { status: 401 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 100,
+        random: NO_JITTER,
+        onError: (err) => errors.push(err),
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(call).toBe(3);
+      expect(sync.status).toBe("error");
+      expect(errors).toEqual([expect.objectContaining({ kind: "auth" })]);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(call).toBe(3);
+
+      await sync.close();
+    });
   });
 
   describe("resilience", () => {
@@ -653,6 +694,73 @@ describe("attachIntentGraphSync", () => {
       catalog.emit("invoke_start");
       await vi.advanceTimersByTimeAsync(100);
       expect(call).toBe(3);
+
+      await sync.close();
+    });
+
+    it("load 401 stops retrying after reporting once", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let requests = 0;
+      const fetchImpl = (async () => {
+        requests += 1;
+        return jsonResponse({}, { status: 401 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 10,
+        random: NO_JITTER,
+        onError: (err) => errors.push(err),
+      });
+
+      expect(sync.status).toBe("error");
+      expect(errors).toEqual([expect.objectContaining({ kind: "auth" })]);
+      expect((sync.graph as unknown as FakeIntentGraphLike).clusterCount).toBe(0);
+      expect(requests).toBe(1);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests).toBe(1);
+
+      await sync.close();
+    });
+
+    it("PUT 401 stops retrying after reporting once", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let requests = 0;
+      const fetchImpl = (async () => {
+        requests += 1;
+        if (requests === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({}, { status: 401 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 10,
+        random: NO_JITTER,
+        onError: (err) => errors.push(err),
+      });
+      expect(sync.status).toBe("idle");
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(requests).toBe(2);
+      expect(sync.status).toBe("error");
+      expect(errors).toEqual([expect.objectContaining({ kind: "auth" })]);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests).toBe(2);
 
       await sync.close();
     });
