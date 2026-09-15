@@ -623,6 +623,39 @@ describe("attachIntentGraphSync", () => {
       await sync.close();
     });
 
+    it("floors backoff jitter at a quarter of the current backoff", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) throw new Error("network down");
+        return jsonResponse({ rev: 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 100,
+        random: () => 0, // minimum jitter sample
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(100); // debounce -> attempt 2 (fails)
+      expect(call).toBe(2);
+
+      // Even at the minimum jitter sample, the retry must not fire before the
+      // floor (a quarter of the 1000ms INITIAL_BACKOFF_MS = 250ms).
+      await vi.advanceTimersByTimeAsync(249);
+      expect(call).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(3);
+      expect(sync.status).toBe("idle");
+      await sync.close();
+    });
+
     it("honors Retry-After on 429 instead of the exponential backoff", async () => {
       vi.useFakeTimers();
       const catalog = new FakeCatalog();

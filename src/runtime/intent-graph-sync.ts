@@ -291,7 +291,11 @@ export async function attachIntentGraphSync(
   function nextBackoffDelay(): number {
     const sample = randomImpl();
     const ratio = Number.isFinite(sample) ? Math.min(Math.max(sample, 0), 1) : 0;
-    const delay = backoffMs * ratio;
+    // A floor of a quarter of the current backoff keeps full jitter's spread
+    // (decorrelating a thundering herd) without letting unlimited retries
+    // fire in a near-zero-delay tight loop against Cloud.
+    const floor = backoffMs / 4;
+    const delay = floor + (backoffMs - floor) * ratio;
     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
     return delay;
   }
