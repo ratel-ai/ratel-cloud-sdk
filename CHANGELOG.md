@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0-rc.2 (unreleased)
+## 0.7.0-rc.2 - 2026-09-16
 
 ### Changed
 
