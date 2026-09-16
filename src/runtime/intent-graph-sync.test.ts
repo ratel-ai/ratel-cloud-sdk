@@ -1061,6 +1061,81 @@ describe("attachIntentGraphSync", () => {
 
       await sync.close();
     });
+
+    it("a batch arriving mid-flight during a failing attempt does not delay the retry to debounceMs", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) {
+          // Simulate a qualifying batch landing while this PUT is in flight,
+          // before it resolves as a failure.
+          (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+          catalog.emit("invoke_start");
+          return jsonResponse({}, { status: 500 });
+        }
+        return jsonResponse({ rev: 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 15_000, // much longer than the ~1000ms backoff delay below
+        random: NO_JITTER,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(15_000); // debounce fires -> call 2 fails
+      expect(call).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(call).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(3); // the backoff retry, not a 15s-delayed one
+
+      await sync.close();
+    });
+
+    it("a batch arriving mid-flight during a 429 does not override Retry-After", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) {
+          (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+          catalog.emit("invoke_start");
+          return jsonResponse(
+            { error: "rate_limited" },
+            { status: 429, headers: { "Retry-After": "20" } },
+          );
+        }
+        return jsonResponse({ rev: 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 5_000, // shorter than Retry-After, so a stomp would fire early
+        random: NO_JITTER,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(5_000); // debounce fires -> call 2 -> 429
+      expect(call).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(19_999); // just short of Retry-After: 20s
+      expect(call).toBe(2);
+      await vi.advanceTimersByTimeAsync(1); // the Retry-After deadline itself
+      expect(call).toBe(3);
+
+      await sync.close();
+    });
   });
 
   describe("privacy", () => {

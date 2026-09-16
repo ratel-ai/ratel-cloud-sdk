@@ -573,7 +573,12 @@ export async function attachIntentGraphSync(
     awaitingBackoff = false;
     const promise = (loaded ? runAttemptOnce() : runLoadRetryOnce()).finally(() => {
       inFlightPromise = undefined;
-      if (loaded && dirty && !closed && status !== "disabled") {
+      // Don't clobber a backoff/Retry-After timer that the failure path just
+      // armed with the correct delay: a batch that arrived mid-flight and set
+      // dirty is still picked up when that already-scheduled retry fires and
+      // re-reads graph.rev, so rescheduling here would only replace the
+      // correct delay with the (unrelated) debounce one.
+      if (loaded && dirty && !closed && status !== "disabled" && !awaitingBackoff) {
         scheduleAttempt(debounceMs);
       }
     });
