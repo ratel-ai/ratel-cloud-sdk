@@ -33,6 +33,15 @@ export {
 } from "./delivery-status.js";
 export { hashCatalogSnapshot } from "./hash.js";
 export {
+  attachIntentGraphSync,
+  type IntentGraphSync,
+  type IntentGraphSyncCatalog,
+  type IntentGraphSyncError,
+  type IntentGraphSyncErrorKind,
+  type IntentGraphSyncOptions,
+  type IntentGraphSyncStatus,
+} from "./intent-graph-sync.js";
+export {
   RUNTIME_EVENT_BATCH_MAX_BYTES,
   RUNTIME_EVENT_BATCH_MAX_EVENTS,
   RUNTIME_EVENT_MAX_BYTES,
