@@ -452,6 +452,142 @@ describe("attachIntentGraphSync", () => {
       expect(ifMatches).toEqual([undefined, '"e2"']);
       await sync.close();
     });
+
+    it("continuous qualifying batches never let the debounce elapse, so max-wait saves instead", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      let puts = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        puts += 1;
+        return jsonResponse({ rev: puts });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 15_000,
+        maxWaitMs: 60_000,
+      });
+
+      for (let second = 1; second <= 59; second += 1) {
+        (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+        catalog.emit("invoke_start");
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(puts).toBe(0); // the debounce keeps getting pushed out; it never elapses
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(1_000); // t=60s: max-wait fires
+      expect(puts).toBe(1);
+
+      for (let second = 61; second <= 120; second += 1) {
+        (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+        catalog.emit("invoke_start");
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(puts).toBe(2); // a fresh max-wait episode armed right after the first save
+
+      await sync.close();
+    });
+
+    it("a single batch then silence saves once on the debounce, with no duplicate from max-wait", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({ rev: 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 15_000,
+        maxWaitMs: 60_000,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(call).toBe(2); // load + the one debounced save
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(call).toBe(2); // the armed max-wait timer was cancelled when the save started
+
+      await sync.close();
+    });
+
+    it("maxWaitMs: 0 saves on the next tick instead of waiting for the debounce", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({ rev: 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 15_000,
+        maxWaitMs: 0,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(call).toBe(2); // saved immediately, long before the 15s debounce could fire
+      await sync.close();
+    });
+
+    it("max-wait never preempts a scheduled backoff retry after a 429", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) {
+          return jsonResponse(
+            { error: "rate_limited" },
+            { status: 429, headers: { "Retry-After": "55" } },
+          );
+        }
+        return jsonResponse({ rev: 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 1_000,
+        maxWaitMs: 60_000,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(1_000); // debounced PUT fires -> 429, Retry-After: 55
+      expect(call).toBe(2);
+
+      // A qualifying batch while the backoff wait is pending must not arm an
+      // independent max-wait timer that could fire before the 55s deadline.
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+      await vi.advanceTimersByTimeAsync(54_000); // t=1s+54s=55s from the 429, still short
+      expect(call).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(1_000); // the Retry-After deadline itself
+      expect(call).toBe(3);
+      expect(sync.status).toBe("idle");
+
+      await sync.close();
+    });
   });
 
   describe("conflict", () => {

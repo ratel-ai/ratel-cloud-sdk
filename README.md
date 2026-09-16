@@ -218,6 +218,16 @@ const sync = await attachIntentGraphSync(catalog, {
 catalog.experimentalEnableAdaptiveRanking(sync.graph);
 ```
 
+Saves are deliberately coarse: a trailing debounce of `debounceMs` (default 15 seconds) after
+the last qualifying invoke, capped by `maxWaitMs` (default 60 seconds) so a save happens at
+least that often even under continuous activity that would otherwise keep resetting the
+debounce forever. Cloud rate-limits this route per project API key, and every PUT makes it
+rebuild the graph's cluster/edge projection server-side, so saving on every invoke would both
+throttle quickly and waste that work; the graph is learning state, not a transaction log, so
+a minute of persistence latency is an acceptable tradeoff against a crash losing everything
+learned since the last save. `maxWaitMs: 0` saves on the next tick instead of waiting for the
+debounce — it does not disable the cap.
+
 `onReplaced` fires when Cloud rejects a save because another process wrote a newer graph first
 (HTTP 409): the SDK re-fetches the newer graph, replaces its own in-memory reference, and hands
 it to you so ranking can be re-armed against current data — the rejected write is never retried.

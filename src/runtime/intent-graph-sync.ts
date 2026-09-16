@@ -6,7 +6,8 @@ import { nonNegative, parseRetryAfter } from "./retry.js";
 import { normalizeSourceId } from "./snapshots.js";
 
 const DEFAULT_ENDPOINT = `${DEFAULT_BASE_URL}/intent-graph`;
-const DEFAULT_DEBOUNCE_MS = 2_000;
+const DEFAULT_DEBOUNCE_MS = 15_000;
+const DEFAULT_MAX_WAIT_MS = 60_000;
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const QUALIFYING_EVENT_TYPES = new Set(["invoke_start", "skill_invoke"]);
@@ -40,8 +41,12 @@ export interface IntentGraphSyncOptions {
   readonly endpoint?: string;
   /** Project API key. Defaults to `RATEL_API_KEY`. */
   readonly apiKey?: string;
-  /** Quiet period after a qualifying invoke before saving. Defaults to 2000 ms. */
+  /** Quiet period after a qualifying invoke before saving. Defaults to 15000 ms. */
   readonly debounceMs?: number;
+  /** Upper bound on how long a pending change can wait before saving, even
+   * under continuous qualifying activity that keeps resetting the debounce.
+   * Defaults to 60000 ms. 0 means "save on the next tick", not "disabled". */
+  readonly maxWaitMs?: number;
   /** Cloud held a newer graph (HTTP 409) — swap it into your adaptive ranking. */
   readonly onReplaced?: (graph: IntentGraphType) => void;
   readonly onError?: (err: IntentGraphSyncError) => void;
@@ -130,6 +135,7 @@ export async function attachIntentGraphSync(
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
   const apiKey = options.apiKey ?? process.env.RATEL_API_KEY ?? "";
   const debounceMs = nonNegative(options.debounceMs, DEFAULT_DEBOUNCE_MS);
+  const maxWaitMs = nonNegative(options.maxWaitMs, DEFAULT_MAX_WAIT_MS);
   const timeoutMs = nonNegative(options.timeoutMs, DEFAULT_TIMEOUT_MS);
   const fetchImpl = options.fetch ?? fetch;
   const randomImpl = options.random ?? Math.random;
@@ -147,6 +153,7 @@ export async function attachIntentGraphSync(
   let skippedUntilRev: number | null = null;
   let backoffMs = INITIAL_BACKOFF_MS;
   let nextAttemptTimer: ReturnType<typeof setTimeout> | undefined;
+  let maxWaitTimer: ReturnType<typeof setTimeout> | undefined;
   let awaitingBackoff = false;
   let dirty = false;
   let inFlightPromise: Promise<void> | undefined;
@@ -304,6 +311,12 @@ export async function attachIntentGraphSync(
     nextAttemptTimer = undefined;
   }
 
+  function clearMaxWaitTimer(): void {
+    if (maxWaitTimer === undefined) return;
+    clearTimeout(maxWaitTimer);
+    maxWaitTimer = undefined;
+  }
+
   function scheduleAttempt(delayMs: number): void {
     if (closed) return;
     clearNextAttemptTimer();
@@ -312,6 +325,24 @@ export async function attachIntentGraphSync(
       void triggerAttempt();
     }, delayMs);
     nextAttemptTimer.unref?.();
+  }
+
+  /** Arms once per pending episode (no-op while already ticking), so repeated
+   * qualifying batches — unlike the debounce timer — never push it further
+   * out. Guarantees a save at least every maxWaitMs under continuous traffic
+   * that would otherwise keep resetting the debounce forever. */
+  function armMaxWaitIfNeeded(): void {
+    if (maxWaitTimer !== undefined) return;
+    maxWaitTimer = setTimeout(() => {
+      maxWaitTimer = undefined;
+      // Same guards onEventsBatch uses, so this can't fire into a terminal
+      // state or preempt an in-flight attempt or an already-scheduled backoff
+      // retry (which re-reads rev at its own fire time regardless).
+      if (closed || status === "disabled" || authFailed || !loaded) return;
+      if (inFlightPromise || awaitingBackoff) return;
+      void triggerAttempt();
+    }, maxWaitMs);
+    maxWaitTimer.unref?.();
   }
 
   /** Shared by every failure branch (load-retry, conflict re-fetch, PUT) that
@@ -538,6 +569,7 @@ export async function attachIntentGraphSync(
       return inFlightPromise;
     }
     clearNextAttemptTimer();
+    clearMaxWaitTimer();
     awaitingBackoff = false;
     const promise = (loaded ? runAttemptOnce() : runLoadRetryOnce()).finally(() => {
       inFlightPromise = undefined;
@@ -563,6 +595,7 @@ export async function attachIntentGraphSync(
     if (inFlightPromise) return; // the in-flight attempt's completion handler reschedules
     if (awaitingBackoff) return; // a retry is already scheduled; it re-reads rev at fire time
     scheduleAttempt(debounceMs);
+    armMaxWaitIfNeeded();
   }
 
   async function flush(): Promise<void> {
@@ -587,6 +620,7 @@ export async function attachIntentGraphSync(
     }
     closed = true;
     clearNextAttemptTimer();
+    clearMaxWaitTimer();
     try {
       subscription.unsubscribe();
     } catch {

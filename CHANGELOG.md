@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0-rc.2 (unreleased)
+
+### Changed
+
+- **Intent graph sync saves less often.** `attachIntentGraphSync`'s default debounce rose
+  from 2 to 15 seconds: Cloud rate-limits the intent-graph route per project API key, and
+  every save makes it rebuild the graph's cluster/edge projection, so a busy source saving
+  on nearly every invoke was both hitting 429s and wasting that work.
+
+### Added
+
+- **`maxWaitMs` on `attachIntentGraphSync`.** A pending change now saves at least once every
+  `maxWaitMs` (default 60 seconds) regardless of how continuously qualifying activity keeps
+  resetting the debounce — previously, a continuously busy agent never saved at all until it
+  went idle or `close()` ran, so a crash in that window lost everything learned since the
+  last save.
+
 ## 0.7.0-rc.1 - 2026-09-15
 
 ### Added
