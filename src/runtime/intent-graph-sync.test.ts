@@ -494,6 +494,54 @@ describe("attachIntentGraphSync", () => {
       await sync.close();
     });
 
+    it("a batch arriving truly mid-flight still gets a max-wait guarantee, not just a debounce", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) {
+          // A real async gap: by the time this resolves, inFlightPromise has
+          // already been set, so a batch emitted now is genuinely mid-flight
+          // (onEventsBatch's `if (inFlightPromise) return;` path), not a
+          // same-tick reentrant call that would arm the timers itself.
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return jsonResponse({ rev: call - 1 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        debounceMs: 100_000, // much longer than maxWaitMs, so only max-wait can save
+        maxWaitMs: 10_000,
+      });
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start");
+
+      await vi.advanceTimersByTimeAsync(10_000); // max-wait fires, PUT starts, awaits the inner 10ms timer
+      expect(call).toBe(2);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start"); // genuinely mid-flight now
+      await vi.advanceTimersByTimeAsync(10); // the PUT resolves successfully
+
+      expect(call).toBe(2);
+      expect(sync.status).toBe("idle");
+
+      // Without re-arming max-wait for the mid-flight change, only the 100s
+      // debounce would be pending here; assert the save instead happens at
+      // maxWaitMs.
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(call).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(3);
+
+      await sync.close();
+    });
+
     it("a single batch then silence saves once on the debounce, with no duplicate from max-wait", async () => {
       vi.useFakeTimers();
       const catalog = new FakeCatalog();

@@ -580,6 +580,7 @@ export async function attachIntentGraphSync(
       // correct delay with the (unrelated) debounce one.
       if (loaded && dirty && !closed && status !== "disabled" && !awaitingBackoff) {
         scheduleAttempt(debounceMs);
+        armMaxWaitIfNeeded();
       }
     });
     inFlightPromise = promise;
