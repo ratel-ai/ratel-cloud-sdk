@@ -52,10 +52,12 @@ interface FakeIntentGraphLike {
 
 class FakeCatalog {
   unsubscribed = false;
+  subscribeCount = 0;
   #handler: ((batch: readonly RuntimeEvent[]) => void) | undefined;
   readonly events = {
     sourceId: "billing-agent",
     subscribe: (handler: (batch: readonly RuntimeEvent[]) => void) => {
+      this.subscribeCount += 1;
       this.#handler = handler;
       return {
         unsubscribe: () => {
@@ -1187,7 +1189,7 @@ describe("attachIntentGraphSync", () => {
   });
 
   describe("consume mode", () => {
-    it("loads the graph, records the etag, and never PUTs even with maxWaitMs: 0", async () => {
+    it("loads the graph and records the etag without ever subscribing to the event stream", async () => {
       vi.useFakeTimers();
       const catalog = new FakeCatalog();
       const methods: string[] = [];
@@ -1210,13 +1212,18 @@ describe("attachIntentGraphSync", () => {
       expect(sync.status).toBe("idle");
       expect(methods).toEqual(["GET"]);
 
+      // The real proof that consume mode can't PUT: it never subscribes in the
+      // first place, so this local rev bump and "invoke_start" have no handler
+      // to reach — unlike push mode, where the same two lines would debounce-save.
+      expect(catalog.subscribeCount).toBe(0);
       (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
-      catalog.emit("invoke_start"); // no subscription exists in consume mode: a no-op
+      catalog.emit("invoke_start");
       await vi.advanceTimersByTimeAsync(60_000);
 
       expect(methods.every((method) => method === "GET")).toBe(true);
+      expect(catalog.subscribeCount).toBe(0);
       await sync.close();
-      expect(catalog.unsubscribed).toBe(false); // never subscribed in the first place
+      expect(catalog.unsubscribed).toBe(false); // nothing to unsubscribe from
     });
 
     it("404 not_found on load exposes an empty graph and stays idle; the next poll adopts it", async () => {
