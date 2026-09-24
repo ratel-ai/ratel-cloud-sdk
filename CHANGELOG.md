@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.0-rc.3 - 2026-09-24
+
+### Added
+
+- **Consume mode for `attachIntentGraphSync`.** `mode: "consume"` reads a graph Ratel Cloud
+  owns instead of syncing the runtime's own: it polls `graphKey` (defaults to `sourceId`) with
+  a conditional GET on `pollIntervalMs` (default 5 minutes, 15-second floor), adopts newer
+  revisions through the existing `onReplaced` callback, and never subscribes to the runtime's
+  event stream or PUTs. `graphKey`/`pollIntervalMs` are consume-mode only and throw at attach
+  in the default push mode, which is unchanged. See the README's "Consuming a Cloud graph"
+  subsection.
+
+### Changed
+
+- **`attach()` forwards the adaptive-ranking usage/status events.** `usage_boost`,
+  `usage_model_mismatch`, `usage_cluster_policy_changed`, and `usage_ranking_status` now
+  leave the process alongside the existing runtime event set (ADR-0020 amendment); none
+  carries user content. `turn_id` forwarding — already implicit in the publisher's
+  whole-envelope serialization — is now covered by a test, so a future change can't drop it
+  silently.
+
 ## 0.7.0-rc.2 - 2026-09-16
 
 ### Changed

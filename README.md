@@ -89,7 +89,10 @@ descriptions.
 
 `attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
 remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
-process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
+process; local-only diagnostics such as `embedder_load` are filtered out before publication. As
+of this version, the adaptive-ranking diagnostics `usage_boost`, `usage_model_mismatch`,
+`usage_cluster_policy_changed`, and `usage_ranking_status` are forwarded too — none of them
+carries user content. It
 requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
 against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
 
@@ -242,6 +245,37 @@ time for the same `catalog` throws — each catalog gets exactly one sync. Set
 `RATEL_CLOUD_INTENT_GRAPH=off` to disable it entirely (no network activity, an empty in-memory
 graph), matching `RATEL_CLOUD_EVENTS=off` for events. Call `sync.close()` during shutdown to
 flush a pending save and unsubscribe; there is no global registration to clean up on its behalf.
+
+#### Consuming a Cloud graph
+
+Pass `mode: "consume"` to read a graph Ratel Cloud owns instead of syncing the runtime's own —
+the intended shape once Cloud replays every runtime's usage events server-side and builds one
+graph per project. This mode never writes: it never subscribes to the event stream and never
+PUTs, so `graph.rev` moving locally is nobody's business but the app's own.
+
+```ts
+const sync = await attachIntentGraphSync(catalog, {
+  mode: "consume",
+  graphKey: "cloud",          // the key Ratel Cloud serves the project graph under
+  pollIntervalMs: 300_000,
+  onReplaced: (graph) => {
+    catalog.experimentalDisableAdaptiveRanking();
+    catalog.experimentalEnableAdaptiveRanking(graph, { learn: false }); // @ratel-ai/sdk >= 0.13.0
+  },
+});
+catalog.experimentalEnableAdaptiveRanking(sync.graph, { learn: false });
+```
+
+`graphKey` selects which stored graph to fetch and defaults to `sourceId`; it is the runtime's
+own key until Ratel Cloud serves project-level graphs, and until then the route answers
+`not_found` for any other key, which this mode treats as "not built yet" rather than an error.
+`pollIntervalMs` sets how often a conditional GET checks for a newer revision — default 300000ms
+(5 minutes), clamped to a 15000ms floor. `onReplaced` fires on every adopted poll after the
+first load, exactly as it does on a push-mode conflict; pass `learn: false` to
+`experimentalEnableAdaptiveRanking` so the app boosts from the adopted graph without also
+learning into it locally — leave learning on and the next adoption silently overwrites whatever
+it accumulated. `graphKey` and `pollIntervalMs` are consume-mode only options; passing either
+with the default push mode throws at attach.
 
 ---
 
