@@ -12,6 +12,15 @@
   in the default push mode, which is unchanged. See the README's "Consuming a Cloud graph"
   subsection.
 
+### Changed
+
+- **`attach()` forwards the adaptive-ranking usage/status events.** `usage_boost`,
+  `usage_model_mismatch`, `usage_cluster_policy_changed`, and `usage_ranking_status` now
+  leave the process alongside the existing runtime event set (ADR-0020 amendment); none
+  carries user content. `turn_id` forwarding — already implicit in the publisher's
+  whole-envelope serialization — is now covered by a test, so a future change can't drop it
+  silently.
+
 ## 0.7.0-rc.2 - 2026-09-16
 
 ### Changed

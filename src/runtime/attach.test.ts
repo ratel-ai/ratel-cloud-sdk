@@ -438,12 +438,151 @@ describe("attach", () => {
     });
 
     runtime.emit({ ...EVENT, event_id: "allowed", type: "invoke_start" });
+    runtime.emit({ ...EVENT, event_id: "adaptive-ranking", type: "usage_boost" });
     runtime.emit({ ...EVENT, event_id: "local-paths", type: "embedder_load" });
     runtime.emit({ ...EVENT, event_id: "local-search", type: "fact_search" });
     await handle.flush();
     await handle.close();
 
-    expect(delivered.map((event) => event.event_id)).toEqual(["allowed"]);
+    expect(delivered.map((event) => event.event_id)).toEqual(["allowed", "adaptive-ranking"]);
+  });
+
+  it("forwards the adaptive-ranking usage/status events with their payload fields intact", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          delivered.push(...(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] }).events);
+        }
+        return Response.json({}, { status: 202 });
+      }) as typeof fetch,
+    });
+
+    const usageBoostHit = {
+      ...EVENT,
+      event_id: "usage-boost-hit",
+      type: "usage_boost",
+      intent: "cluster-42",
+      similarity: 0.87,
+      support: 5,
+      promoted: true,
+      dropped: false,
+    };
+    const usageBoostMiss = {
+      ...EVENT,
+      event_id: "usage-boost-miss",
+      type: "usage_boost",
+      intent: null,
+      similarity: null,
+      support: 0,
+      promoted: false,
+      dropped: false,
+    };
+    const usageModelMismatch = {
+      ...EVENT,
+      event_id: "usage-model-mismatch",
+      type: "usage_model_mismatch",
+      built: "text-embedding-3-small",
+      active: "text-embedding-3-large",
+      dim_mismatch: true,
+    };
+    const usageClusterPolicyChanged = {
+      ...EVENT,
+      event_id: "usage-cluster-policy-changed",
+      type: "usage_cluster_policy_changed",
+      built_similarity: 0.8,
+      built_coverage: 0.6,
+      active_similarity: 0.75,
+      active_coverage: 0.65,
+    };
+    const usageRankingStatus = {
+      ...EVENT,
+      event_id: "usage-ranking-status",
+      type: "usage_ranking_status",
+      status: "enabled",
+      reason: "cloud_graph_adopted",
+      rev: 9,
+      graph_key: "cloud",
+      learn: false,
+      model: "text-embedding-3-large",
+    };
+
+    runtime.emit(usageBoostHit);
+    runtime.emit(usageBoostMiss);
+    runtime.emit(usageModelMismatch);
+    runtime.emit(usageClusterPolicyChanged);
+    runtime.emit(usageRankingStatus);
+    await handle.flush();
+
+    expect(delivered).toEqual([
+      usageBoostHit,
+      usageBoostMiss,
+      usageModelMismatch,
+      usageClusterPolicyChanged,
+      usageRankingStatus,
+    ]);
+  });
+
+  it("keeps graph_key and learn intact on a usage_ranking_status event", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          delivered.push(...(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] }).events);
+        }
+        return Response.json({}, { status: 202 });
+      }) as typeof fetch,
+    });
+
+    runtime.emit({
+      ...EVENT,
+      event_id: "ranking-status",
+      type: "usage_ranking_status",
+      status: "enabled",
+      graph_key: "cloud",
+      learn: false,
+    });
+    await handle.flush();
+
+    expect(delivered[0]?.graph_key).toBe("cloud");
+    expect(delivered[0]?.learn).toBe(false);
+  });
+
+  it("forwards turn_id unchanged, and omits the key entirely when absent", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          delivered.push(...(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] }).events);
+        }
+        return Response.json({}, { status: 202 });
+      }) as typeof fetch,
+    });
+
+    runtime.emit({ ...EVENT, event_id: "with-turn", type: "search", turn_id: "turn-abc" });
+    runtime.emit({
+      ...EVENT,
+      event_id: "with-turn-invoke",
+      type: "invoke_start",
+      turn_id: "turn-abc",
+    });
+    runtime.emit({ ...EVENT, event_id: "without-turn", type: "search" });
+    await handle.flush();
+
+    const withTurn = delivered.find((event) => event.event_id === "with-turn");
+    const withTurnInvoke = delivered.find((event) => event.event_id === "with-turn-invoke");
+    const withoutTurn = delivered.find((event) => event.event_id === "without-turn");
+
+    expect(withTurn?.turn_id).toBe("turn-abc");
+    expect(withTurnInvoke?.turn_id).toBe("turn-abc");
+    expect(withoutTurn).toBeDefined();
+    expect("turn_id" in (withoutTurn as RuntimeEvent)).toBe(false);
   });
 
   it("normalizes the source id once for both delivery lanes", async () => {

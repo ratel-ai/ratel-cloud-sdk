@@ -1,4 +1,5 @@
-/** Frozen remotely publishable v1 event names from ADR-0020. */
+/** Frozen remotely publishable v1 event names from ADR-0020.
+ * 2026-09-24: ADR-0020 amended to add the adaptive-ranking usage/status family. */
 export const RUNTIME_EVENT_TYPES = [
   "search",
   "skill_search",
@@ -27,6 +28,10 @@ export const RUNTIME_EVENT_TYPES = [
   "experiment_invocation",
   "experiment_outcome",
   "events_dropped",
+  "usage_boost",
+  "usage_model_mismatch",
+  "usage_cluster_policy_changed",
+  "usage_ranking_status",
 ] as const;
 
 export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];

@@ -89,7 +89,10 @@ descriptions.
 
 `attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
 remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
-process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
+process; local-only diagnostics such as `embedder_load` are filtered out before publication. As
+of this version, the adaptive-ranking diagnostics `usage_boost`, `usage_model_mismatch`,
+`usage_cluster_policy_changed`, and `usage_ranking_status` are forwarded too — none of them
+carries user content. It
 requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
 against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
 
