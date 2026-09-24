@@ -114,6 +114,11 @@ const ATTACHED = new WeakSet<object>();
  * per-source-id graph storage. This function never learns, clusters, ranks,
  * or edits the graph, and never calls `experimentalEnableAdaptiveRanking` /
  * `experimentalDisableAdaptiveRanking` itself — that stays the caller's job.
+ *
+ * Two modes (`options.mode`): "push" (default) syncs the runtime's own graph up to
+ * Cloud, debounce-saving local usage and resolving write conflicts via `onReplaced`.
+ * "consume" is read-only — it polls a graph Cloud owns (`options.graphKey`) and never
+ * PUTs; see `IntentGraphSyncOptions` and the README's "Consuming a Cloud graph" section.
  */
 export async function attachIntentGraphSync(
   catalog: IntentGraphSyncCatalog,
