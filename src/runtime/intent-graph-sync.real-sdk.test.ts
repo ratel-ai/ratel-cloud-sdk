@@ -20,6 +20,11 @@ function meetsMinVersion(version: string, min: readonly [number, number, number]
   return true;
 }
 
+// TODO(RC-204): @ratel-ai/sdk 0.13.0 is only published as -rc.* as of this writing, so the
+// `learn: false` test below is permanently skipped until the devDependency is bumped past
+// 0.13.0-rc.*. Once a GA 0.13.0 (or newer) ships: bump the devDependency, drop the
+// `@ts-expect-error` on `experimentalEnableAdaptiveRanking(..., { learn: false })`, and
+// confirm this test actually runs (not just typechecks) before relying on its coverage.
 const supportsLearnFalse = meetsMinVersion(installedSdkVersion, [0, 13, 0]);
 
 /**
