@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Consume mode for `attachIntentGraphSync`.** `mode: "consume"` reads a graph Ratel Cloud
+  owns instead of syncing the runtime's own: it polls `graphKey` (defaults to `sourceId`) with
+  a conditional GET on `pollIntervalMs` (default 5 minutes, 15-second floor), adopts newer
+  revisions through the existing `onReplaced` callback, and never subscribes to the runtime's
+  event stream or PUTs. `graphKey`/`pollIntervalMs` are consume-mode only and throw at attach
+  in the default push mode, which is unchanged. See the README's "Consuming a Cloud graph"
+  subsection.
+
 ## 0.7.0-rc.2 - 2026-09-16
 
 ### Changed

@@ -1,6 +1,26 @@
+import { createRequire } from "node:module";
 import { IntentGraph, ratel } from "@ratel-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { attachIntentGraphSync } from "./intent-graph-sync.js";
+
+const require = createRequire(import.meta.url);
+const installedSdkVersion: string = (require("@ratel-ai/sdk/package.json") as { version: string })
+  .version;
+
+/** Numeric major.minor.patch comparison; a prerelease suffix (e.g. "0.13.0-rc.5")
+ * parses its patch segment as 0 via `Number.parseInt`, which is fine here — RCs
+ * of a version are treated as meeting that version's floor. */
+function meetsMinVersion(version: string, min: readonly [number, number, number]): boolean {
+  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
+  for (let index = 0; index < 3; index += 1) {
+    const actual = parts[index] ?? 0;
+    const required = min[index] ?? 0;
+    if (actual !== required) return actual > required;
+  }
+  return true;
+}
+
+const supportsLearnFalse = meetsMinVersion(installedSdkVersion, [0, 13, 0]);
 
 /**
  * Unlike intent-graph-sync.test.ts (which mocks `@ratel-ai/sdk` entirely for
@@ -118,4 +138,39 @@ describe("attachIntentGraphSync against the real @ratel-ai/sdk", () => {
     expect(() => IntentGraph.fromJson("not json")).toThrow();
     expect(() => IntentGraph.fromJson('{"v":999,"rev":0,"clusters":[]}')).toThrow();
   });
+
+  (supportsLearnFalse ? it : it.skip)(
+    `consume mode + learn: false keeps the adopted graph inert during search/invoke ` +
+      `(requires @ratel-ai/sdk >=0.13.0, installed ${installedSdkVersion})`,
+    async () => {
+      const { runtime, seedGraph } = await buildSeedGraph();
+      const graphJson = seedGraph.toJson();
+
+      const fetchImpl = (async () =>
+        jsonResponse(
+          { sourceId: "cloud", rev: seedGraph.rev, graph: JSON.parse(graphJson) },
+          { headers: { ETag: '"cloud-e1"' } },
+        )) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(runtime, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        graphKey: "cloud",
+      });
+
+      // @ts-expect-error — `learn` lands on the installed devDependency only at >=0.13.0.
+      runtime.tools.catalog.experimentalEnableAdaptiveRanking(sync.graph, { learn: false });
+      const revBefore = sync.graph.rev;
+      const jsonBefore = sync.graph.toJson();
+
+      runtime.tools.search("how do I roll back a deploy", 1);
+      await runtime.tools.invoke("deploy_rollback", {});
+
+      expect(sync.graph.rev).toBe(revBefore);
+      expect(sync.graph.toJson()).toBe(jsonBefore);
+
+      await sync.close();
+    },
+  );
 });

@@ -10,7 +10,11 @@ const DEFAULT_DEBOUNCE_MS = 15_000;
 const DEFAULT_MAX_WAIT_MS = 60_000;
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
+const DEFAULT_POLL_INTERVAL_MS = 300_000;
+const MIN_POLL_INTERVAL_MS = 15_000;
 const QUALIFYING_EVENT_TYPES = new Set(["invoke_start", "skill_invoke"]);
+
+export type IntentGraphSyncMode = "push" | "consume";
 
 export type IntentGraphSyncStatus = "idle" | "syncing" | "conflict" | "disabled" | "error";
 
@@ -37,6 +41,14 @@ export interface IntentGraphSyncCatalog {
 export interface IntentGraphSyncOptions {
   /** Stable deployment source. Defaults to the runtime's own event-stream source id. */
   readonly sourceId?: string;
+  /** "push" (default): sync this runtime's own graph up to Cloud, as today.
+   * "consume": read a graph Cloud owns and poll for newer revisions; never PUT. */
+  readonly mode?: IntentGraphSyncMode;
+  /** Consume mode only: which stored graph to fetch. Defaults to `sourceId`. */
+  readonly graphKey?: string;
+  /** Consume mode only: how often to poll with a conditional GET. Defaults to 300000 ms
+   * (5 minutes). Minimum 15000 ms; lower values are clamped. */
+  readonly pollIntervalMs?: number;
   /** Defaults to `https://cloud.ratel.sh/api/v1/intent-graph`. */
   readonly endpoint?: string;
   /** Project API key. Defaults to `RATEL_API_KEY`. */
@@ -47,7 +59,8 @@ export interface IntentGraphSyncOptions {
    * under continuous qualifying activity that keeps resetting the debounce.
    * Defaults to 60000 ms. 0 means "save on the next tick", not "disabled". */
   readonly maxWaitMs?: number;
-  /** Cloud held a newer graph (HTTP 409) — swap it into your adaptive ranking. */
+  /** Cloud held a newer graph (HTTP 409) — swap it into your adaptive ranking. In consume
+   * mode, fires on every adopted poll after the first load (never a real "conflict"). */
   readonly onReplaced?: (graph: IntentGraphType) => void;
   readonly onError?: (err: IntentGraphSyncError) => void;
   readonly fetch?: typeof fetch;
@@ -116,6 +129,13 @@ export async function attachIntentGraphSync(
   }
   ATTACHED.add(catalog);
 
+  const mode: IntentGraphSyncMode = options.mode ?? "push";
+  if (mode === "push" && (options.graphKey !== undefined || options.pollIntervalMs !== undefined)) {
+    throw new Error(
+      '@ratel-ai/cloud-sdk/runtime: "graphKey"/"pollIntervalMs" are consume-mode only options (mode: "consume")',
+    );
+  }
+
   // A missing/incompatible peer is a caller setup error, not a Cloud
   // connectivity failure — this is the one path allowed to reject; every
   // failure past this point is fail-open.
@@ -132,6 +152,16 @@ export async function attachIntentGraphSync(
   }
 
   const sourceId = normalizeSourceId(options.sourceId ?? catalog.events.sourceId);
+  const graphKey =
+    mode === "consume"
+      ? options.graphKey === undefined
+        ? sourceId
+        : normalizeSourceId(options.graphKey)
+      : sourceId;
+  const pollIntervalMs = Math.max(
+    nonNegative(options.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS),
+    MIN_POLL_INTERVAL_MS,
+  );
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
   const apiKey = options.apiKey ?? process.env.RATEL_API_KEY ?? "";
   const debounceMs = nonNegative(options.debounceMs, DEFAULT_DEBOUNCE_MS);
@@ -213,7 +243,7 @@ export async function attachIntentGraphSync(
   async function doGet(ifNoneMatch: string | null): Promise<GetOutcome> {
     let response: Response;
     try {
-      response = await fetchImpl(`${endpoint}?source=${encodeURIComponent(sourceId)}`, {
+      response = await fetchImpl(`${endpoint}?source=${encodeURIComponent(graphKey)}`, {
         method: "GET",
         headers: {
           authorization: `Bearer ${apiKey}`,
@@ -322,7 +352,7 @@ export async function attachIntentGraphSync(
     clearNextAttemptTimer();
     nextAttemptTimer = setTimeout(() => {
       nextAttemptTimer = undefined;
-      void triggerAttempt();
+      void (mode === "push" ? triggerAttempt() : triggerConsumeAttempt());
     }, delayMs);
     nextAttemptTimer.unref?.();
   }
@@ -367,7 +397,7 @@ export async function attachIntentGraphSync(
       // Console diagnostics remain fail-open.
     }
     try {
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     } catch {
       // Detach failures cannot escape into host shutdown.
     }
@@ -628,7 +658,7 @@ export async function attachIntentGraphSync(
     clearNextAttemptTimer();
     clearMaxWaitTimer();
     try {
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     } catch {
       // Detach failures cannot escape into host shutdown.
     }
@@ -639,11 +669,120 @@ export async function attachIntentGraphSync(
     return closePromise;
   }
 
-  const subscription = catalog.events.subscribe(onEventsBatch);
+  /** Consume mode: read-only counterpart to the push loop above. Reuses `doGet` and
+   * `adoptGraphFromCloud` but never subscribes to events and never PUTs. */
+  async function runConsumeAttempt(ifNoneMatch: string | null): Promise<void> {
+    status = "syncing";
+    const outcome = await doGet(ifNoneMatch);
+    switch (outcome.kind) {
+      case "ok": {
+        if (firstAttemptDone) {
+          adoptGraphFromCloud(outcome);
+        } else {
+          graph = IntentGraphCtor.fromJson(outcome.graphJson);
+          etag = outcome.etag;
+          loaded = true;
+          status = "idle";
+          backoffMs = INITIAL_BACKOFF_MS;
+          errorReportedForCurrentFailure = false;
+        }
+        scheduleAttempt(pollIntervalMs);
+        return;
+      }
+      case "not_modified": {
+        status = "idle";
+        backoffMs = INITIAL_BACKOFF_MS;
+        errorReportedForCurrentFailure = false;
+        scheduleAttempt(pollIntervalMs);
+        return;
+      }
+      case "not_found": {
+        // Cloud hasn't built a graph under this key yet — a normal state, not an error.
+        if (!loaded) {
+          graph = new IntentGraphCtor();
+          loaded = true;
+        }
+        status = "idle";
+        backoffMs = INITIAL_BACKOFF_MS;
+        errorReportedForCurrentFailure = false;
+        scheduleAttempt(pollIntervalMs);
+        return;
+      }
+      case "feature_disabled": {
+        goTerminalDisabled();
+        return;
+      }
+      case "auth": {
+        status = "error";
+        authFailed = true;
+        reportErrorOnce({
+          kind: "auth",
+          status: 401,
+          message: "Ratel Cloud rejected the API key — intent graph sync has stopped",
+        });
+        return; // no re-arm: waiting never fixes a revoked key
+      }
+      case "rate_limited": {
+        status = "error";
+        reportErrorOnce({
+          kind: "rate_limited",
+          status: 429,
+          message: "Ratel Cloud is rate limiting intent graph sync",
+        });
+        awaitingBackoff = true;
+        scheduleAttempt(Math.max(outcome.retryAfterMs ?? 0, pollIntervalMs));
+        return;
+      }
+      case "network": {
+        status = "error";
+        reportErrorOnce({
+          kind: "network",
+          status: null,
+          message: "failed to poll the intent graph from Ratel Cloud",
+        });
+        awaitingBackoff = true;
+        scheduleAttempt(Math.max(nextBackoffDelay(), MIN_POLL_INTERVAL_MS));
+        return;
+      }
+    }
+  }
+
+  function triggerConsumeAttempt(): Promise<void> {
+    if (closed || status === "disabled" || authFailed) return Promise.resolve();
+    if (inFlightPromise) return inFlightPromise;
+    clearNextAttemptTimer();
+    awaitingBackoff = false;
+    const promise = runConsumeAttempt(etag).finally(() => {
+      inFlightPromise = undefined;
+    });
+    inFlightPromise = promise;
+    return promise;
+  }
+
+  async function flushConsume(): Promise<void> {
+    if (status === "disabled" || authFailed) return;
+    if (inFlightPromise) {
+      await inFlightPromise.catch(() => {});
+      return;
+    }
+    if (awaitingBackoff) return; // respect an active backoff wait
+    await triggerConsumeAttempt().catch(() => {});
+  }
+
+  async function closeConsume(): Promise<void> {
+    closed = true;
+    clearNextAttemptTimer();
+  }
+
+  const subscription = mode === "push" ? catalog.events.subscribe(onEventsBatch) : undefined;
   // The initial load is just the first attempt of the same load-retry/save loop:
   // on failure it arms a background retry and resolves anyway, so the caller
   // is never blocked waiting on Cloud (see runLoadRetryOnce for outcomes).
-  await triggerAttempt();
+  if (mode === "push") {
+    await triggerAttempt();
+  } else {
+    await triggerConsumeAttempt();
+  }
   firstAttemptDone = true;
 
   return {
@@ -653,8 +792,8 @@ export async function attachIntentGraphSync(
     get status() {
       return status;
     },
-    flush,
-    close,
+    flush: mode === "push" ? flush : flushConsume,
+    close: mode === "push" ? close : closeConsume,
   };
 }
 

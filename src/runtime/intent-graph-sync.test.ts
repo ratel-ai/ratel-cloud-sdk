@@ -1186,6 +1186,507 @@ describe("attachIntentGraphSync", () => {
     });
   });
 
+  describe("consume mode", () => {
+    it("loads the graph, records the etag, and never PUTs even with maxWaitMs: 0", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const methods: string[] = [];
+      const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        methods.push(init?.method ?? "GET");
+        return jsonResponse(
+          { sourceId: "billing-agent", rev: 3, graph: { v: 1, rev: 3, clusters: [] } },
+          { headers: { ETag: '"e1"' } },
+        );
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        maxWaitMs: 0,
+      });
+
+      expect((sync.graph as unknown as FakeIntentGraphLike).rev).toBe(3);
+      expect(sync.status).toBe("idle");
+      expect(methods).toEqual(["GET"]);
+
+      (sync.graph as unknown as FakeIntentGraphLike).bumpRev();
+      catalog.emit("invoke_start"); // no subscription exists in consume mode: a no-op
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(methods.every((method) => method === "GET")).toBe(true);
+      await sync.close();
+      expect(catalog.unsubscribed).toBe(false); // never subscribed in the first place
+    });
+
+    it("404 not_found on load exposes an empty graph and stays idle; the next poll adopts it", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const replaced: unknown[] = [];
+      const errors: unknown[] = [];
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse(
+          { sourceId: "cloud", rev: 4, graph: { v: 1, rev: 4, clusters: [{ members: [] }] } },
+          { headers: { ETag: '"e4"' } },
+        );
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        onReplaced: (graph) => replaced.push(graph),
+        onError: (err) => errors.push(err),
+      });
+
+      expect((sync.graph as unknown as FakeIntentGraphLike).clusterCount).toBe(0);
+      expect(sync.status).toBe("idle");
+      expect(errors).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(call).toBe(2);
+      expect(replaced).toHaveLength(1);
+      expect((replaced[0] as FakeIntentGraphLike).rev).toBe(4);
+      expect((sync.graph as unknown as FakeIntentGraphLike).rev).toBe(4);
+      expect(errors).toHaveLength(0);
+
+      await sync.close();
+    });
+
+    it("polls with If-None-Match using the last etag; 304 keeps the same graph and skips onReplaced", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const replaced: unknown[] = [];
+      const headersSeen: Array<string | undefined> = [];
+      let call = 0;
+      const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        call += 1;
+        const headers = init?.headers as Record<string, string> | undefined;
+        headersSeen.push(headers?.["if-none-match"]);
+        if (call === 1) {
+          return jsonResponse(
+            { sourceId: "billing-agent", rev: 1, graph: { v: 1, rev: 1, clusters: [] } },
+            { headers: { ETag: '"e1"' } },
+          );
+        }
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        onReplaced: (graph) => replaced.push(graph),
+      });
+
+      const initialGraph = sync.graph;
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(call).toBe(2);
+      expect(headersSeen).toEqual([undefined, '"e1"']);
+      expect(sync.graph).toBe(initialGraph);
+      expect(replaced).toHaveLength(0);
+      expect(sync.status).toBe("idle");
+
+      await sync.close();
+    });
+
+    it("poll 200 with a higher rev adopts, fires onReplaced, and the new etag is used next", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const replaced: unknown[] = [];
+      const headersSeen: Array<string | undefined> = [];
+      let call = 0;
+      const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        call += 1;
+        const headers = init?.headers as Record<string, string> | undefined;
+        headersSeen.push(headers?.["if-none-match"]);
+        if (call === 1) {
+          return jsonResponse(
+            { sourceId: "billing-agent", rev: 1, graph: { v: 1, rev: 1, clusters: [] } },
+            { headers: { ETag: '"e1"' } },
+          );
+        }
+        if (call === 2) {
+          return jsonResponse(
+            {
+              sourceId: "billing-agent",
+              rev: 2,
+              graph: { v: 1, rev: 2, clusters: [{ members: [] }] },
+            },
+            { headers: { ETag: '"e2"' } },
+          );
+        }
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        onReplaced: (graph) => replaced.push(graph),
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000); // poll 2 -> adopts rev 2
+      expect(replaced).toHaveLength(1);
+      expect((replaced[0] as FakeIntentGraphLike).rev).toBe(2);
+      expect((sync.graph as unknown as FakeIntentGraphLike).rev).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(15_000); // poll 3, using the etag from the adoption
+      expect(headersSeen).toEqual([undefined, '"e1"', '"e2"']);
+
+      await sync.close();
+    });
+
+    it("uses graphKey in the query string instead of sourceId", async () => {
+      const catalog = new FakeCatalog();
+      const requests: string[] = [];
+      const fetchImpl = (async (url: RequestInfo | URL) => {
+        requests.push(String(url));
+        return jsonResponse({ error: "not_found" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        graphKey: "cloud",
+      });
+
+      expect(requests[0]).toContain("source=cloud");
+      expect(requests[0]).not.toContain("source=billing-agent");
+      await sync.close();
+    });
+
+    it("clamps pollIntervalMs below 15000ms to the floor", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 1_000, // below the 15000ms floor
+      });
+
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(call).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(2);
+
+      await sync.close();
+    });
+
+    it("429 on a poll waits max(Retry-After, pollIntervalMs)", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) {
+          return jsonResponse(
+            { error: "rate_limited" },
+            { status: 429, headers: { "Retry-After": "30" } },
+          );
+        }
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        onError: (err) => errors.push(err),
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000); // first poll -> 429
+      expect(call).toBe(2);
+      expect(errors).toEqual([expect.objectContaining({ kind: "rate_limited" })]);
+
+      await vi.advanceTimersByTimeAsync(29_999); // Retry-After (30s) outlasts pollIntervalMs (15s)
+      expect(call).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(3);
+      expect(sync.status).toBe("idle");
+
+      await sync.close();
+    });
+
+    it("a network failure on a poll backs off (floor 15s) and recovers", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) throw new Error("network down");
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        random: NO_JITTER,
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000); // first poll -> network failure
+      expect(call).toBe(2);
+      expect(sync.status).toBe("error");
+
+      // nextBackoffDelay() with NO_JITTER and INITIAL_BACKOFF_MS=1000 would
+      // fire at 1000ms; the consume-mode floor of 15000ms overrides it.
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(call).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(call).toBe(3);
+      expect(sync.status).toBe("idle");
+
+      await sync.close();
+    });
+
+    it("flush() respects an active backoff wait instead of forcing a GET", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        if (call === 2) throw new Error("network down");
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        random: NO_JITTER,
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000); // poll -> network failure, backoff armed
+      expect(call).toBe(2);
+
+      await sync.flush(); // must not bypass the backoff wait
+      expect(call).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(15_000); // the backoff timer itself fires
+      expect(call).toBe(3);
+
+      await sync.close();
+    });
+
+    it("401 on a poll stops polling permanently", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({}, { status: 401 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        onError: (err) => errors.push(err),
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(call).toBe(2);
+      expect(sync.status).toBe("error");
+      expect(errors).toEqual([expect.objectContaining({ kind: "auth" })]);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(call).toBe(2);
+
+      await sync.close();
+    });
+
+    it("feature_disabled on a poll goes terminal and stops polling", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return jsonResponse({ error: "feature_disabled" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(call).toBe(2);
+      expect(sync.status).toBe("disabled");
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(call).toBe(2);
+
+      await sync.close();
+      warn.mockRestore();
+    });
+
+    it("flush() issues one immediate GET, bypassing the poll timer", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) return jsonResponse({ error: "not_found" }, { status: 404 });
+        return new Response(null, { status: 304 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 300_000,
+      });
+
+      expect(call).toBe(1);
+      await sync.flush();
+      expect(call).toBe(2);
+
+      await sync.close();
+    });
+
+    it("close() stops the timer and issues no further requests", async () => {
+      vi.useFakeTimers();
+      const catalog = new FakeCatalog();
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        return jsonResponse({ error: "not_found" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+      });
+
+      expect(call).toBe(1);
+      await sync.close();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(call).toBe(1);
+    });
+
+    it("throws at attach when graphKey or pollIntervalMs is passed in push mode", async () => {
+      const fetchImpl = (async () =>
+        jsonResponse({ error: "not_found" }, { status: 404 })) as typeof fetch;
+
+      await expect(
+        attachIntentGraphSync(new FakeCatalog(), {
+          apiKey: "rtl_test",
+          fetch: fetchImpl,
+          graphKey: "cloud",
+        }),
+      ).rejects.toThrow(/consume-mode only/);
+
+      await expect(
+        attachIntentGraphSync(new FakeCatalog(), {
+          apiKey: "rtl_test",
+          fetch: fetchImpl,
+          pollIntervalMs: 20_000,
+        }),
+      ).rejects.toThrow(/consume-mode only/);
+    });
+
+    it("never logs or reports a graph member string", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const catalog = new FakeCatalog();
+      const errors: unknown[] = [];
+      const secret = "what is my account balance";
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) {
+          return jsonResponse(
+            {
+              sourceId: "billing-agent",
+              rev: 1,
+              graph: { v: 1, rev: 1, clusters: [{ members: [secret] }] },
+            },
+            { headers: { ETag: '"e1"' } },
+          );
+        }
+        if (call === 2) return jsonResponse({}, { status: 500 });
+        return jsonResponse({}, { status: 401 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        pollIntervalMs: 15_000,
+        random: NO_JITTER,
+        onError: (err) => errors.push(err),
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000); // poll -> 500 network error
+      await vi.advanceTimersByTimeAsync(15_000); // backoff retry -> 401 terminal
+
+      const haystack = JSON.stringify([...warn.mock.calls, ...log.mock.calls, ...errors]);
+      expect(haystack).not.toContain(secret);
+
+      await sync.close();
+      warn.mockRestore();
+      log.mockRestore();
+    });
+
+    it("RATEL_CLOUD_INTENT_GRAPH=off returns disabled with zero network activity", async () => {
+      process.env.RATEL_CLOUD_INTENT_GRAPH = "off";
+      const catalog = new FakeCatalog();
+      let requests = 0;
+      const fetchImpl = (async () => {
+        requests += 1;
+        return jsonResponse({ error: "not_found" }, { status: 404 });
+      }) as typeof fetch;
+
+      const sync = await attachIntentGraphSync(catalog, {
+        apiKey: "rtl_test",
+        fetch: fetchImpl,
+        mode: "consume",
+        graphKey: "cloud",
+      });
+
+      expect(sync.status).toBe("disabled");
+      expect(requests).toBe(0);
+      await sync.flush();
+      await sync.close();
+      expect(requests).toBe(0);
+    });
+  });
+
   describe("privacy", () => {
     it("never logs or reports a graph member string", async () => {
       vi.useFakeTimers();
