@@ -134,6 +134,10 @@ export async function attachIntentGraphSync(
   }
   ATTACHED.add(catalog);
 
+  // Like the missing-peer rejection below, this is a caller setup error, not a
+  // runtime condition — but it's checked after ATTACHED.add(catalog), so the
+  // catalog is already spent: fix the options and re-attach on a fresh catalog,
+  // not this one, or the retry itself throws "already called".
   const mode: IntentGraphSyncMode = options.mode ?? "push";
   if (mode === "push" && (options.graphKey !== undefined || options.pollIntervalMs !== undefined)) {
     throw new Error(
