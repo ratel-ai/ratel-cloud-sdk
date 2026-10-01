@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`turn_start` reaches Cloud.** `attach()` now forwards the `turn_start` event that
+  `@ratel-ai/sdk` 0.13.0-rc.10 and later emit when a request is marked with `r.turn(...)`
+  (or when a framework adapter opens a turn per agent call), so Cloud can group a request's
+  searches and tool calls into one run, attribute it to an end user, and show what the user
+  asked when the app opted in. `turn_id`, `end_user_id`, and `trace_id` pass through
+  unchanged, and so does `origin: "external"` on tool calls recorded with
+  `r.recordToolCall(...)`. Older SDKs simply never emit the event.
+
 ## 0.7.0-rc.2 - 2026-09-16
 
 ### Changed

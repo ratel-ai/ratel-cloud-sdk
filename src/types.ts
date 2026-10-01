@@ -92,6 +92,8 @@ export interface RuntimeEvent {
   readonly end_user_id?: string;
   readonly trace_id?: string;
   readonly span_id?: string;
+  /** The application turn (one user request) this event belongs to. */
+  readonly turn_id?: string;
   readonly [field: string]: unknown;
 }
 

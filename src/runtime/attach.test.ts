@@ -446,6 +446,51 @@ describe("attach", () => {
     expect(delivered.map((event) => event.event_id)).toEqual(["allowed"]);
   });
 
+  it("forwards turn markers and keeps turn, end-user, and trace correlation intact", async () => {
+    const delivered: RuntimeEvent[] = [];
+    const runtime = new FakeRuntime();
+    const handle = attach(runtime, {
+      apiKey: "rtl_test",
+      sourceId: "service-a",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/events")) {
+          delivered.push(...(JSON.parse(String(init?.body)) as { events: RuntimeEvent[] }).events);
+        }
+        return Response.json({}, { status: 202 });
+      }) as typeof fetch,
+    });
+    const correlation = {
+      turn_id: "turn-1",
+      end_user_id: "user-1",
+      trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+      span_id: "00f067aa0ba902b7",
+    };
+    const turnStart = {
+      ...EVENT,
+      ...correlation,
+      event_id: "start",
+      type: "turn_start",
+      user_message: "book a flight",
+    };
+    const externalCall = {
+      ...EVENT,
+      ...correlation,
+      event_id: "external",
+      type: "invoke_end",
+      invocation_id: "inv-1",
+      tool_id: "web_search",
+      took_ms: 12,
+      origin: "external",
+    };
+
+    runtime.emit(turnStart);
+    runtime.emit(externalCall);
+    await handle.flush();
+    await handle.close();
+
+    expect(delivered).toEqual([turnStart, externalCall]);
+  });
+
   it("normalizes the source id once for both delivery lanes", async () => {
     const stamped: Array<{ lane: string; sourceId: string }> = [];
     const runtime = new FakeRuntime();
