@@ -87,11 +87,32 @@ Failures warn once per continuous failure period. An initial-pull failure leaves
 descriptions active; a later refresh failure retains the last successfully applied Cloud
 descriptions.
 
-`attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
-remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
-process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
+`attach()` subscribes to search, invocation, registration, experiment, and turn facts. Only the
+remotely publishable set (ADR-0020's v1 events plus `turn_start`, exported as
+`RUNTIME_EVENT_TYPES`) leaves the process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
 requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
 against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
+
+### Mark each request
+
+Wrap each user request in `runtime.turn(...)` so Cloud sees it as one run: every search and tool
+call inside carries the same `turn_id`, even when many users hit the same process at once.
+
+```ts
+app.post("/chat", async (req, res) => {
+  const answer = await runtime.turn(() => runAgent(req.body.message), {
+    endUserId: req.user.id, // optional: your id for the user
+    userMessage: req.body.message, // optional: what they asked, sent only if you pass it
+  });
+  res.json(answer);
+});
+
+// A tool your framework ran itself, outside runtime.tools.invoke:
+runtime.recordToolCall({ toolId: "web_search", tookMs: 120 });
+```
+
+The Vercel AI SDK and Mastra adapters open a turn per agent call on their own. Turns need
+`@ratel-ai/sdk` 0.13.0-rc.10 or later; `attach()` forwards their `turn_start` events as they are.
 
 `attach()` publishes an initial catalog snapshot and refreshes it after tool registration churn,
 debounced behind a quiet period with a max wait of four debounce windows so sustained churn

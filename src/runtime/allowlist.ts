@@ -1,5 +1,9 @@
-/** Frozen remotely publishable v1 event names from ADR-0020. */
+/**
+ * Remotely publishable event names: the frozen ADR-0020 v1 set plus the
+ * additive `turn_start` (ADR-0026, emitted by `@ratel-ai/sdk` >= 0.13.0-rc.10).
+ */
 export const RUNTIME_EVENT_TYPES = [
+  "turn_start",
   "search",
   "skill_search",
   "gateway_search",
