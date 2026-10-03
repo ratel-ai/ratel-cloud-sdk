@@ -264,6 +264,86 @@ time for the same `catalog` throws — each catalog gets exactly one sync. Set
 graph), matching `RATEL_CLOUD_EVENTS=off` for events. Call `sync.close()` during shutdown to
 flush a pending save and unsubscribe; there is no global registration to clean up on its behalf.
 
+### Tool Picker ranking (`retrieveFn`)
+
+`ratelCloud()` ranks a Ratel runtime's tools with the Ratel Cloud Tool Picker. `rc.toolPicker`
+is a plain `RankFn`, so it plugs into the generic ranking hooks of `@ratel-ai/sdk`; the SDK
+itself knows nothing about Cloud:
+
+```ts
+import { ratel } from "@ratel-ai/sdk";
+import { attach, ratelCloud } from "@ratel-ai/cloud-sdk/runtime";
+
+const rc = ratelCloud({ apiKey: process.env.RATEL_API_KEY }); // apiKey defaults to RATEL_API_KEY
+const runtime = ratel({ method: "custom", retrieveFn: rc.toolPicker });
+const cloudRuntime = attach(runtime);
+
+await runtime.tools.register(/* … */);
+await cloudRuntime.flush(); // publish the catalog snapshot before the first search
+
+const hits = await runtime.tools.searchAsync("roll back the last deploy", 5);
+```
+
+`retrieveFn` and `rerankerFn` need an `@ratel-ai/sdk` release that ships them (ADR-0027), and a
+`"custom"` catalog searches through `searchAsync` only. `ratelCloud` is a named export because the
+snippets above import the subpath as a namespace called `ratelCloud`. With the namespace import,
+write `ratelCloud.ratelCloud(...)`.
+
+**Modes.** `rc.toolPicker` asks in `precise` mode. `withMode` returns a picker for another mode
+and leaves the original as it was:
+
+| Mode | Ranking | Client timeout |
+|---|---|---|
+| `instant` | BM25 only, no credits | 15 s |
+| `precise` (default) | BM25 shortlist, then Jev | 15 s |
+| `exhaustive` | Jev over the whole catalog. Can take seconds, and Cloud stops at 45 s | 60 s |
+
+```ts
+ratel({ method: "custom", retrieveFn: rc.toolPicker.withMode("exhaustive") });
+ratel({ method: "bm25", rerankerFn: rc.toolPicker.withMode("instant") }); // rerank BM25's top 50
+```
+
+Pass `timeoutMs` to `ratelCloud()` to override both budgets. `baseUrl` takes the same
+`/api/v1`-prefixed value as `attach()`, and the picker calls `POST {baseUrl}/tools/pick`.
+
+**The catalog comes from the snapshot, not the candidates.** The Tool Picker ranks the
+project's synced runtime catalog, the one `attach()` publishes through `PUT /catalog/snapshot`.
+`rc.toolPicker` sends only `{ query, mode, top_k }`, with `top_k` capped at Cloud's maximum of 20.
+It does not send the candidate texts. Before the first search, call `attach()`, register your
+tools, and `await cloudRuntime.flush()`. Snapshots are otherwise debounced (~500 ms), so a search
+straight after `register` can reach Cloud before the catalog does.
+
+`flush()` resolves even when the PUT failed. To confirm the snapshot landed, check that
+`cloudRuntime.status().snapshots[sourceId].lastDurableAt` is set. If the project has no synced
+tools, the pick fails with `NoSyncedTools`. Ids the picker returns that this runtime has not
+registered (for example, tools another source id synced) are dropped by the SDK.
+
+**Skills.** The picker knows only tools. `ratel({ retrieveFn })` also ranks the skill catalog
+with the same function. In that case `rc.toolPicker` returns `[]` without calling Cloud, so a
+skill search finds nothing.
+
+**Errors.** Every failure is a `RetrieverError` from `@ratel-ai/sdk`, carrying `code`, `status`
+(when Cloud answered) and `transient`. A `retrieveFn` search fails on any error. A `rerankerFn`
+falls back to stage-1 order on a transient error and fails on the rest.
+
+| `code` | Cause | `transient` |
+|---|---|---|
+| `Config` | No `apiKey` and no `RATEL_API_KEY`. Raised before any request | no |
+| `InvalidRequest` | 400, 413 | no |
+| `Unauthorized` | 401, 403 | no |
+| `InsufficientCredits` | 402: out of Tool Picker credits | no |
+| `NoSyncedTools` | 409: no catalog snapshot yet | no |
+| `RateLimited` | 429, with `retryAfterSecs` set from a numeric `Retry-After` | yes |
+| `Unavailable` | 502, 503 | yes |
+| `Timeout` | 504, or the client timeout | yes |
+| `Unreachable` | Network failure | yes |
+| `Malformed` | A 2xx response the client cannot parse | yes |
+| `Http` | Any other status. Transient for 5xx | 5xx only |
+
+**Data sent to Ratel Cloud.** Every search sends its query text to Ratel Cloud with the project
+key. The tool catalog it ranks (ids, names, descriptions) reaches Cloud through `attach()`'s
+snapshot.
+
 ---
 
 ## API reference
