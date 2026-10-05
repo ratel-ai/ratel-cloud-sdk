@@ -70,9 +70,9 @@ and facts through the core SDK. Definition events emitted after adoption carry
 that remains locally owned. Omit the flag (or set it to false) to keep local
 `experimentalSearchableDescription` values authoritative and make no overlay request.
 
-Cloud definitions require `@ratel-ai/sdk` >= 0.12.0. Versions 0.10.x and 0.11.x remain supported
-for runtime events and catalog snapshots, but using this flag warns once and keeps local Retrieval
-descriptions active.
+Cloud definitions require `@ratel-ai/sdk` >= 0.12.0, which the declared peer range
+(>= 0.13.0-rc.11) already guarantees. Against an older SDK outside that range, using this flag
+warns once and keeps local Retrieval descriptions active.
 
 The initial pull is fail-open and runs in the background because `attach()` remains synchronous.
 `flush()` and `close()` await it. For later pulls, call
@@ -89,9 +89,10 @@ descriptions.
 
 `attach()` subscribes to search, invocation, registration, experiment, and turn facts. Only the
 remotely publishable set (ADR-0020's v1 events plus `turn_start`, exported as
-`RUNTIME_EVENT_TYPES`) leaves the process; local-only diagnostics such as `embedder_load` are filtered out before publication. It
-requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
-against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
+`RUNTIME_EVENT_TYPES`) leaves the process; local-only diagnostics such as `embedder_load` are filtered out before publication.
+`@ratel-ai/sdk` is an optional peer dependency at >= 0.13.0-rc.11, the first release with the
+ranking hooks the [Tool Picker](#tool-picker-ranking-retrievefn) plugs into. Against an older SDK
+without runtime events, `attach()` warns once and returns a no-op handle.
 
 ### Mark each request
 
@@ -284,7 +285,8 @@ await cloudRuntime.flush(); // publish the catalog snapshot before the first sea
 const hits = await runtime.tools.searchAsync("roll back the last deploy", 5);
 ```
 
-`retrieveFn` and `rerankerFn` need an `@ratel-ai/sdk` release that ships them (ADR-0027), and a
+`retrieveFn`, `rerankerFn` and `RetrieverError` first ship in `@ratel-ai/sdk` 0.13.0-rc.11
+(ADR-0027), and a
 `"custom"` catalog searches through `searchAsync` only. `ratelCloud` is a named export because the
 snippets above import the subpath as a namespace called `ratelCloud`. With the namespace import,
 write `ratelCloud.ratelCloud(...)`.
