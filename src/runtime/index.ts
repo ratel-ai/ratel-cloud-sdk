@@ -1,4 +1,4 @@
-/** `@ratel-ai/cloud-sdk/runtime` — fail-open runtime facts delivery. */
+/** `@ratel-ai/cloud-sdk/runtime` — fail-open runtime facts delivery, plus Tool Picker ranking. */
 
 export type {
   RuntimeCatalogSnapshot,
@@ -54,3 +54,10 @@ export {
   CatalogSnapshotsPublisher,
   type CatalogSnapshotsPublisherOptions,
 } from "./snapshots.js";
+export {
+  type RatelCloud,
+  type RatelCloudOptions,
+  ratelCloud,
+  type ToolPicker,
+  type ToolPickerMode,
+} from "./tool-picker.js";

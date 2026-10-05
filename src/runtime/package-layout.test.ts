@@ -7,6 +7,7 @@ import {
   attachIntentGraphSync,
   CatalogSnapshotsPublisher,
   hashCatalogSnapshot,
+  ratelCloud,
 } from "./index.js";
 
 const PKG = JSON.parse(
@@ -38,13 +39,18 @@ describe("the /runtime subpath", () => {
     expect(attachIntentGraphSync).toBeTypeOf("function");
   });
 
+  it("exports the Tool Picker client", () => {
+    expect(ratelCloud).toBeTypeOf("function");
+  });
+
   it("keeps runtime attachment off the dependency-free root", () => {
     expect(root).not.toHaveProperty("attach");
     expect(root).not.toHaveProperty("attachIntentGraphSync");
+    expect(root).not.toHaveProperty("ratelCloud");
   });
 
   it("declares the runtime-events SDK floor as an optional peer", () => {
-    expect(PKG.peerDependencies["@ratel-ai/sdk"]).toBe(">=0.10.0");
+    expect(PKG.peerDependencies["@ratel-ai/sdk"]).toBe(">=0.13.0-rc.11");
     expect(PKG.peerDependenciesMeta["@ratel-ai/sdk"]).toEqual({ optional: true });
   });
 });
