@@ -50,7 +50,7 @@ describe("the /runtime subpath", () => {
   });
 
   it("declares the runtime-events SDK floor as an optional peer", () => {
-    expect(PKG.peerDependencies["@ratel-ai/sdk"]).toBe(">=0.10.0");
+    expect(PKG.peerDependencies["@ratel-ai/sdk"]).toBe(">=0.13.0-rc.11");
     expect(PKG.peerDependenciesMeta["@ratel-ai/sdk"]).toEqual({ optional: true });
   });
 });
