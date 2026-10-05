@@ -308,7 +308,8 @@ Pass `timeoutMs` to `ratelCloud()` to override both budgets. `baseUrl` takes the
 
 **The catalog comes from the snapshot, not the candidates.** The Tool Picker ranks the
 project's synced runtime catalog, the one `attach()` publishes through `PUT /catalog/snapshot`.
-`rc.toolPicker` sends only `{ query, mode, top_k }`, with `top_k` capped at Cloud's maximum of 20.
+`rc.toolPicker` sends only `{ query, mode, top_k }`, with `top_k` capped at Cloud's maximum of 20
+and the query cut to Cloud's 2000-character limit.
 It does not send the candidate texts. Before the first search, call `attach()`, register your
 tools, and `await cloudRuntime.flush()`. Snapshots are otherwise debounced (~500 ms), so a search
 straight after `register` can reach Cloud before the catalog does.

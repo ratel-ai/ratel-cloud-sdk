@@ -90,6 +90,26 @@ describe("ratelCloud().toolPicker", () => {
     expect(bodyOf(http.calls[0]).top_k).toBe(20);
   });
 
+  it("truncates the query to Cloud's 2000-character limit", async () => {
+    const http = stub();
+    const rc = ratelCloud({ apiKey: "rk", fetch: http.fetch });
+
+    await rc.toolPicker("a".repeat(2000), TOOLS, 5);
+    await rc.toolPicker(`${"a".repeat(2000)}tail`, TOOLS, 5);
+
+    expect(bodyOf(http.calls[0]).query).toBe("a".repeat(2000));
+    expect(bodyOf(http.calls[1]).query).toBe("a".repeat(2000));
+  });
+
+  it("does not split a surrogate pair when truncating", async () => {
+    const http = stub();
+    const rc = ratelCloud({ apiKey: "rk", fetch: http.fetch });
+
+    await rc.toolPicker(`${"a".repeat(1999)}😀tail`, TOOLS, 5);
+
+    expect(bodyOf(http.calls[0]).query).toBe("a".repeat(1999));
+  });
+
   it("returns the picked ids and scores, best first", async () => {
     const rc = ratelCloud({ apiKey: "rk", fetch: stub().fetch });
 

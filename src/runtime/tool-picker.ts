@@ -35,6 +35,8 @@ export interface RatelCloud {
 
 /** Cloud's `top_k` ceiling for `/tools/pick`. */
 const MAX_TOP_K = 20;
+/** Cloud rejects longer queries with a 400, which would fail a reranker instead of falling back. */
+const MAX_QUERY_CHARS = 2_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
 /** Above Cloud's 45 s pick deadline, so its 504 arrives before our abort. */
 const EXHAUSTIVE_TIMEOUT_MS = 60_000;
@@ -79,7 +81,7 @@ async function pickTools(
     response = await (options.fetch ?? fetch)(`${baseUrl}/tools/pick`, {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ query, mode, top_k: Math.min(topK, MAX_TOP_K) }),
+      body: JSON.stringify({ query: truncate(query), mode, top_k: Math.min(topK, MAX_TOP_K) }),
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -224,6 +226,14 @@ function parseRanked(body: unknown): RankedId[] | undefined {
     ranked.push({ id: tool.id, score: tool.score });
   }
   return ranked;
+}
+
+/** Cut to Cloud's limit (UTF-16 units, as Cloud counts) without splitting a surrogate pair. */
+function truncate(query: string): string {
+  if (query.length <= MAX_QUERY_CHARS) return query;
+  const last = query.charCodeAt(MAX_QUERY_CHARS - 1);
+  const highSurrogate = last >= 0xd800 && last <= 0xdbff;
+  return query.slice(0, highSurrogate ? MAX_QUERY_CHARS - 1 : MAX_QUERY_CHARS);
 }
 
 /** Whole seconds only; an HTTP-date is ignored. */
