@@ -308,12 +308,15 @@ ratel({ method: "bm25", rerankerFn: rc.toolPicker.withMode("instant") }); // rer
 Pass `timeoutMs` to `ratelCloud()` to override both budgets. `baseUrl` takes the same
 `/api/v1`-prefixed value as `attach()`, and the picker calls `POST {baseUrl}/tools/pick`.
 
-**The catalog comes from the snapshot, not the candidates.** The Tool Picker ranks the
-project's synced runtime catalog, the one `attach()` publishes through `PUT /catalog/snapshot`.
-`rc.toolPicker` sends only `{ query, mode, top_k }`, with `top_k` capped at Cloud's maximum of 20
-and the query cut to Cloud's 2000-character limit.
-It does not send the candidate texts. Before the first search, call `attach()`, register your
-tools, and `await cloudRuntime.flush()`. Snapshots are otherwise debounced (~500 ms), so a search
+**The catalog comes from Cloud, not the candidates.** The Tool Picker ranks the project's
+runtime catalog in Cloud: every tool any source id has synced to the project, one entry per tool
+id. `attach()` fills it through `PUT /catalog/snapshot`, but Cloud also updates entries from the
+definition events runtimes report, and for each tool the most recent write wins. So the text Cloud
+ranks can differ from what this runtime registered when another runtime reports the same tool id
+with different text. `rc.toolPicker` sends only `{ query, mode, top_k }`, with `top_k` capped at
+Cloud's maximum of 20 and the query cut to Cloud's 2000-character limit. It does not send the
+candidate texts. Before the first search, call `attach()`, register your tools, and
+`await cloudRuntime.flush()`. Snapshots are otherwise debounced (~500 ms), so a search
 straight after `register` can reach Cloud before the catalog does.
 
 `flush()` resolves even when the PUT failed. To confirm the snapshot landed, check that

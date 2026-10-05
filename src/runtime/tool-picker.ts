@@ -37,7 +37,7 @@ export interface RatelCloud {
 const MAX_TOP_K = 20;
 /** Cloud rejects longer queries with a 400, which would fail a reranker instead of falling back. */
 const MAX_QUERY_CHARS = 2_000;
-const DEFAULT_TIMEOUT_MS = 15_000;
+const PICK_TIMEOUT_MS = 15_000;
 /** Above Cloud's 45 s pick deadline, so its 504 arrives before our abort. */
 const EXHAUSTIVE_TIMEOUT_MS = 60_000;
 
@@ -62,7 +62,8 @@ async function pickTools(
   candidates: RankCandidate[],
   topK: number,
 ): Promise<RankedId[]> {
-  // The picker ranks the project's synced tool catalog; it knows no skills.
+  // The picker ranks the project's synced tool catalog; it knows no skills. The SDK
+  // calls a RankFn once per catalog, so every candidate shares the first one's kind.
   if (candidates.length === 0 || topK <= 0 || candidates[0]?.kind === "skill") return [];
   const fail = await retrieverErrorFactory();
   const apiKey = options.apiKey ?? process.env.RATEL_API_KEY ?? "";
@@ -75,7 +76,7 @@ async function pickTools(
 
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const timeoutMs =
-    options.timeoutMs ?? (mode === "exhaustive" ? EXHAUSTIVE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    options.timeoutMs ?? (mode === "exhaustive" ? EXHAUSTIVE_TIMEOUT_MS : PICK_TIMEOUT_MS);
   let response: Response;
   try {
     response = await (options.fetch ?? fetch)(`${baseUrl}/tools/pick`, {
@@ -91,7 +92,7 @@ async function pickTools(
         transient: true,
       });
     }
-    throw fail(`Ratel Cloud Tool Picker is unreachable: ${describe(error)}`, "Unreachable", {
+    throw fail(`Ratel Cloud Tool Picker is unreachable: ${errorText(error)}`, "Unreachable", {
       transient: true,
     });
   }
@@ -101,7 +102,13 @@ async function pickTools(
   let body: unknown;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
+    if (isAbort(error)) {
+      throw fail(`Ratel Cloud Tool Picker did not answer within ${timeoutMs} ms`, "Timeout", {
+        transient: true,
+        status,
+      });
+    }
     throw fail("Ratel Cloud Tool Picker returned a body that is not JSON", "Malformed", {
       transient: true,
       status,
@@ -143,7 +150,7 @@ function retrieverErrorFactory(): Promise<ErrorFactory> {
     },
     (error: unknown) => {
       errorFactory = undefined;
-      throw new Error(`Ratel Cloud Tool Picker needs @ratel-ai/sdk: ${describe(error)}`);
+      throw new Error(`Ratel Cloud Tool Picker needs @ratel-ai/sdk: ${errorText(error)}`);
     },
   );
   return errorFactory;
@@ -246,7 +253,7 @@ function isAbort(error: unknown): boolean {
   return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
-function describe(error: unknown): string {
+function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 

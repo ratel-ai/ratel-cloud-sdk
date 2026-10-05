@@ -316,6 +316,27 @@ describe("ratelCloud().toolPicker", () => {
       expect(error.transient).toBe(true);
     });
 
+    it("maps a timeout while reading the body to Timeout", async () => {
+      const stallBody = (call: Call) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              call.init.signal?.addEventListener("abort", () =>
+                controller.error(call.init.signal?.reason),
+              );
+            },
+          }),
+          { status: 200 },
+        );
+      const rc = ratelCloud({ apiKey: "rk", timeoutMs: 20, fetch: stub(stallBody).fetch });
+
+      const error = await failure(rc.toolPicker("q", TOOLS, 5));
+
+      expect(error.code).toBe("Timeout");
+      expect(error.transient).toBe(true);
+      expect(error.status).toBe(200);
+    });
+
     it.each([
       ["instant", 15_000],
       ["precise", 15_000],
