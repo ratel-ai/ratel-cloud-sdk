@@ -70,9 +70,9 @@ and facts through the core SDK. Definition events emitted after adoption carry
 that remains locally owned. Omit the flag (or set it to false) to keep local
 `experimentalSearchableDescription` values authoritative and make no overlay request.
 
-Cloud definitions require `@ratel-ai/sdk` >= 0.12.0. Versions 0.10.x and 0.11.x remain supported
-for runtime events and catalog snapshots, but using this flag warns once and keeps local Retrieval
-descriptions active.
+Cloud definitions require `@ratel-ai/sdk` >= 0.12.0, which the declared peer range
+(>= 0.13.0-rc.11) already guarantees. Against an older SDK outside that range, using this flag
+warns once and keeps local Retrieval descriptions active.
 
 The initial pull is fail-open and runs in the background because `attach()` remains synchronous.
 `flush()` and `close()` await it. For later pulls, call
@@ -87,14 +87,36 @@ Failures warn once per continuous failure period. An initial-pull failure leaves
 descriptions active; a later refresh failure retains the last successfully applied Cloud
 descriptions.
 
-`attach()` subscribes to search, invocation, registration, and experiment facts. Only the frozen
-remotely publishable v1 event set (ADR-0020, exported as `RUNTIME_EVENT_TYPES`) leaves the
-process; local-only diagnostics such as `embedder_load` are filtered out before publication. As
-of this version, the adaptive-ranking diagnostics `usage_boost`, `usage_model_mismatch`,
-`usage_cluster_policy_changed`, and `usage_ranking_status` are forwarded too — none of them
-carries user content. It
-requires a runtime from `@ratel-ai/sdk` >= 0.10.0 (declared as an optional peer dependency) —
-against an older SDK without runtime events, `attach()` warns once and returns a no-op handle.
+`attach()` subscribes to search, invocation, registration, experiment, and turn facts. Only the
+remotely publishable set (ADR-0020's v1 events plus `turn_start`, exported as
+`RUNTIME_EVENT_TYPES`) leaves the process; local-only diagnostics such as `embedder_load` are
+filtered out before publication. As of this version, the adaptive-ranking diagnostics
+`usage_boost`, `usage_model_mismatch`, `usage_cluster_policy_changed`, and `usage_ranking_status`
+are forwarded too — none of them carries user content. `@ratel-ai/sdk` is an optional peer
+dependency at >= 0.13.0-rc.11, the first release with the ranking hooks the
+[Tool Picker](#tool-picker-ranking-retrievefn) plugs into. Against an older SDK without runtime
+events, `attach()` warns once and returns a no-op handle.
+
+### Mark each request
+
+Wrap each user request in `runtime.turn(...)` so Cloud sees it as one run: every search and tool
+call inside carries the same `turn_id`, even when many users hit the same process at once.
+
+```ts
+app.post("/chat", async (req, res) => {
+  const answer = await runtime.turn(() => runAgent(req.body.message), {
+    endUserId: req.user.id, // optional: your id for the user
+    userMessage: req.body.message, // optional: what they asked, sent only if you pass it
+  });
+  res.json(answer);
+});
+
+// A tool your framework ran itself, outside runtime.tools.invoke:
+runtime.recordToolCall({ toolId: "web_search", tookMs: 120 });
+```
+
+The Vercel AI SDK and Mastra adapters open a turn per agent call on their own. Turns need
+`@ratel-ai/sdk` 0.13.0-rc.10 or later; `attach()` forwards their `turn_start` events as they are.
 
 `attach()` publishes an initial catalog snapshot and refreshes it after tool registration churn,
 debounced behind a quiet period with a max wait of four debounce windows so sustained churn
@@ -276,6 +298,91 @@ first load, exactly as it does on a push-mode conflict; pass `learn: false` to
 learning into it locally — leave learning on and the next adoption silently overwrites whatever
 it accumulated. `graphKey` and `pollIntervalMs` are consume-mode only options; passing either
 with the default push mode throws at attach.
+
+### Tool Picker ranking (`retrieveFn`)
+
+`ratelCloud()` ranks a Ratel runtime's tools with the Ratel Cloud Tool Picker. `rc.toolPicker`
+is a plain `RankFn`, so it plugs into the generic ranking hooks of `@ratel-ai/sdk`; the SDK
+itself knows nothing about Cloud:
+
+```ts
+import { ratel } from "@ratel-ai/sdk";
+import { attach, ratelCloud } from "@ratel-ai/cloud-sdk/runtime";
+
+const rc = ratelCloud({ apiKey: process.env.RATEL_API_KEY }); // apiKey defaults to RATEL_API_KEY
+const runtime = ratel({ method: "custom", retrieveFn: rc.toolPicker });
+const cloudRuntime = attach(runtime);
+
+await runtime.tools.register(/* … */);
+await cloudRuntime.flush(); // publish the catalog snapshot before the first search
+
+const hits = await runtime.tools.searchAsync("roll back the last deploy", 5);
+```
+
+`retrieveFn`, `rerankerFn` and `RetrieverError` first ship in `@ratel-ai/sdk` 0.13.0-rc.11
+(ADR-0027), and a
+`"custom"` catalog searches through `searchAsync` only. `ratelCloud` is a named export because the
+snippets above import the subpath as a namespace called `ratelCloud`. With the namespace import,
+write `ratelCloud.ratelCloud(...)`.
+
+**Modes.** `rc.toolPicker` asks in `precise` mode. `withMode` returns a picker for another mode
+and leaves the original as it was:
+
+| Mode | Ranking | Client timeout |
+|---|---|---|
+| `instant` | BM25 only, no credits | 15 s |
+| `precise` (default) | BM25 shortlist, then Jev | 15 s |
+| `exhaustive` | Jev over the whole catalog. Can take seconds, and Cloud stops at 45 s | 60 s |
+
+```ts
+ratel({ method: "custom", retrieveFn: rc.toolPicker.withMode("exhaustive") });
+ratel({ method: "bm25", rerankerFn: rc.toolPicker.withMode("instant") }); // rerank BM25's top 50
+```
+
+Pass `timeoutMs` to `ratelCloud()` to override both budgets. `baseUrl` takes the same
+`/api/v1`-prefixed value as `attach()`, and the picker calls `POST {baseUrl}/tools/pick`.
+
+**The catalog comes from Cloud, not the candidates.** The Tool Picker ranks the project's
+runtime catalog in Cloud: every tool any source id has synced to the project, one entry per tool
+id. `attach()` fills it through `PUT /catalog/snapshot`, but Cloud also updates entries from the
+definition events runtimes report, and for each tool the most recent write wins. So the text Cloud
+ranks can differ from what this runtime registered when another runtime reports the same tool id
+with different text. `rc.toolPicker` sends only `{ query, mode, top_k }`, with `top_k` capped at
+Cloud's maximum of 20 and the query cut to Cloud's 2000-character limit. It does not send the
+candidate texts. Before the first search, call `attach()`, register your tools, and
+`await cloudRuntime.flush()`. Snapshots are otherwise debounced (~500 ms), so a search
+straight after `register` can reach Cloud before the catalog does.
+
+`flush()` resolves even when the PUT failed. To confirm the snapshot landed, check that
+`cloudRuntime.status().snapshots[sourceId].lastDurableAt` is set. If the project has no synced
+tools, the pick fails with `NoSyncedTools`. Ids the picker returns that this runtime has not
+registered (for example, tools another source id synced) are dropped by the SDK.
+
+**Skills.** The picker knows only tools. `ratel({ retrieveFn })` also ranks the skill catalog
+with the same function. In that case `rc.toolPicker` returns `[]` without calling Cloud, so a
+skill search finds nothing.
+
+**Errors.** Every failure is a `RetrieverError` from `@ratel-ai/sdk`, carrying `code`, `status`
+(when Cloud answered) and `transient`. A `retrieveFn` search fails on any error. A `rerankerFn`
+falls back to stage-1 order on a transient error and fails on the rest.
+
+| `code` | Cause | `transient` |
+|---|---|---|
+| `Config` | No `apiKey` and no `RATEL_API_KEY`. Raised before any request | no |
+| `InvalidRequest` | 400, 413 | no |
+| `Unauthorized` | 401, 403 | no |
+| `InsufficientCredits` | 402: out of Tool Picker credits | no |
+| `NoSyncedTools` | 409: no catalog snapshot yet | no |
+| `RateLimited` | 429, with `retryAfterSecs` set from a numeric `Retry-After` | yes |
+| `Unavailable` | 502, 503 | yes |
+| `Timeout` | 504, or the client timeout | yes |
+| `Unreachable` | Network failure | yes |
+| `Malformed` | A 2xx response the client cannot parse | yes |
+| `Http` | Any other status. Transient for 5xx | 5xx only |
+
+**Data sent to Ratel Cloud.** Every search sends its query text to Ratel Cloud with the project
+key. The tool catalog it ranks (ids, names, descriptions) reaches Cloud through `attach()`'s
+snapshot.
 
 ---
 
