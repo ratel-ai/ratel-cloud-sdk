@@ -7,10 +7,17 @@ const require = createRequire(import.meta.url);
 const installedSdkVersion: string = (require("@ratel-ai/sdk/package.json") as { version: string })
   .version;
 
-/** Numeric major.minor.patch comparison; a prerelease suffix (e.g. "0.13.0-rc.5")
- * parses its patch segment as 0 via `Number.parseInt`, which is fine here — RCs
- * of a version are treated as meeting that version's floor. */
+/**
+ * GA-only major.minor.patch comparison: a prerelease suffix (e.g. "0.13.0-rc.11")
+ * never satisfies the floor, regardless of its numeric value. Verified against
+ * 0.13.0-rc.11 (2026-10): `experimentalEnableAdaptiveRanking(graph, { learn: false })`
+ * silently ignores the unknown `learn` key and learns anyway (the graph's rev moves
+ * on search/invoke) — a naive numeric compare would have un-skipped the test below
+ * onto an SDK that doesn't actually have the feature, and the assertion caught it.
+ * Only trust a clean (non-prerelease) version at or above `min`.
+ */
 function meetsMinVersion(version: string, min: readonly [number, number, number]): boolean {
+  if (version.includes("-")) return false;
   const parts = version.split(".").map((part) => Number.parseInt(part, 10));
   for (let index = 0; index < 3; index += 1) {
     const actual = parts[index] ?? 0;
@@ -20,11 +27,12 @@ function meetsMinVersion(version: string, min: readonly [number, number, number]
   return true;
 }
 
-// TODO(RC-204): @ratel-ai/sdk 0.13.0 is only published as -rc.* as of this writing, so the
-// `learn: false` test below is permanently skipped until the devDependency is bumped past
-// 0.13.0-rc.*. Once a GA 0.13.0 (or newer) ships: bump the devDependency, drop the
-// `@ts-expect-error` on `experimentalEnableAdaptiveRanking(..., { learn: false })`, and
-// confirm this test actually runs (not just typechecks) before relying on its coverage.
+// TODO(RC-204): @ratel-ai/sdk 0.13.0 is only published as -rc.* as of this writing (rc.11
+// confirmed to still lack `learn`, see meetsMinVersion's comment), so the `learn: false`
+// test below is permanently skipped until a GA 0.13.0 (or newer) ships. Once it does: bump
+// the devDependency, drop the `@ts-expect-error` on
+// `experimentalEnableAdaptiveRanking(..., { learn: false })`, and confirm this test
+// actually runs (not just typechecks) before relying on its coverage.
 const supportsLearnFalse = meetsMinVersion(installedSdkVersion, [0, 13, 0]);
 
 /**
