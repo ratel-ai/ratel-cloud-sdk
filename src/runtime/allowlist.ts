@@ -1,6 +1,7 @@
 /**
- * Remotely publishable event names: the frozen ADR-0020 v1 set plus the
- * additive `turn_start` (ADR-0026, emitted by `@ratel-ai/sdk` >= 0.13.0-rc.10).
+ * Remotely publishable event names: the frozen ADR-0020 v1 set, plus the
+ * additive `turn_start` (ADR-0026, emitted by `@ratel-ai/sdk` >= 0.13.0-rc.10)
+ * and the adaptive-ranking usage/status family (2026-09-24 ADR-0020 amendment).
  */
 export const RUNTIME_EVENT_TYPES = [
   "turn_start",
@@ -31,6 +32,10 @@ export const RUNTIME_EVENT_TYPES = [
   "experiment_invocation",
   "experiment_outcome",
   "events_dropped",
+  "usage_boost",
+  "usage_model_mismatch",
+  "usage_cluster_policy_changed",
+  "usage_ranking_status",
 ] as const;
 
 export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];
