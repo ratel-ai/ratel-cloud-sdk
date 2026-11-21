@@ -1,5 +1,10 @@
 # @ratel-ai/cloud-sdk
 
+> [!IMPORTANT]
+> **This repository moved to [ratel-ai/ratel-sdk](https://github.com/ratel-ai/ratel-sdk/tree/main/src/cloud-sdk/ts)** (`src/cloud-sdk/ts`).
+> Open new issues and pull requests there. The npm package name `@ratel-ai/cloud-sdk` does not change.
+> This repository stays read-only for reference; it is not archived yet.
+
 Management & supervised self-improvement client for [Ratel Cloud](https://cloud.ratel.sh): manage a project's
 **cloud skills catalog**, run **intent analysis** on conversations, and review the resulting
 **skill suggestions** — over the v1 HTTP API, authenticated by a project API key.
